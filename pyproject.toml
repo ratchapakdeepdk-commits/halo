@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "halo-offload"
+version = "0.1.0"
+description = "Hybrid Agent for Local Offloading: let a frontier coding agent delegate routine, token-heavy work to a free local model."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Ratchapakdee Bamrungoakdee"}]
+dependencies = []
+classifiers = ["Programming Language :: Python :: 3", "License :: OSI Approved :: MIT License"]
+
+[project.scripts]
+halo = "halo.cli:main"
+halo-mcp = "halo.mcp_server:main"
+
+[tool.setuptools]
+packages = ["halo"]
+
+[tool.setuptools.package-data]
+halo = ["skill/SKILL.md"]

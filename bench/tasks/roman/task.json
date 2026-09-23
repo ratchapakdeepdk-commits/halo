@@ -1,0 +1,1 @@
+{"target": "roman.py", "spec": "Write roman.py with `to_roman(n: int) -> str` for 1..3999 (raise ValueError otherwise, including non-int/bool) and `from_roman(s: str) -> int` that accepts only canonical uppercase numerals (e.g. 'IIII', 'IC', 'VX', 'MMMM' and lowercase are invalid -> ValueError). Standard library only."}
