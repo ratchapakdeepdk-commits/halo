@@ -3,7 +3,7 @@
 #   curl -fsSL <raw url>/install.sh | bash            (or ./install.sh from a clone)
 #   ./install.sh --claude                             also register with Claude Code
 set -euo pipefail
-REPO_URL="${HALO_REPO:-https://github.com/OWNER/halo}"
+REPO_URL="${HALO_REPO:-https://github.com/ratchapakdeepdk-commits/halo}"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
 if [[ -f "$here/pyproject.toml" ]]; then src="$here"; else src="git+$REPO_URL"; fi

@@ -7,6 +7,7 @@ Every task returns a dict with a `status` field:
   error        - infrastructure problem (Ollama down, bad path...)
 """
 import difflib
+import json
 import os
 import re
 import subprocess
@@ -58,6 +59,12 @@ def _escalation(text: str):
     return reason.splitlines()[0] if reason else "no reason given"
 
 
+def _record(cfg: Config, kind, status, model, usage, frontier: dict, t0: float, extra=None):
+    ledger.record(kind, status, model, usage, frontier=frontier, seconds=time.time() - t0,
+                  chars_per_token=cfg.chars_per_token, output_weight=cfg.output_weight,
+                  extra=extra)
+
+
 # ---------------------------------------------------------------- ask
 
 def ask(cfg: Config, question: str, *, model: str | None = None,
@@ -71,13 +78,13 @@ def ask(cfg: Config, question: str, *, model: str | None = None,
         return {"status": "error", "error": str(e)}
     esc = _escalation(answer)
     status = "escalated" if esc else "ok"
-    q_tok = ledger.estimate_tokens(question, cfg.chars_per_token)
-    a_tok = ledger.estimate_tokens(answer, cfg.chars_per_token)
-    # Called from a frontier agent, a short Q&A saves almost nothing: the frontier writes
-    # the question and reads the answer anyway. From the shell, the whole exchange is saved.
-    returned = q_tok + a_tok if from_frontier else 0
-    ledger.record("ask", status, model, usage, direct_est=q_tok + a_tok,
-                  returned_est=returned, seconds=time.time() - t0)
+    # Directly, the frontier reads the question and writes the answer. Through HALO it writes
+    # the question and reads the answer - so from an agent the saving is the output/input
+    # price difference only. From the shell nothing reaches the frontier at all.
+    fr = {"direct_in": len(question), "direct_out": len(answer),
+          "halo_in": len(answer) if from_frontier else 0,
+          "halo_out": len(question) if from_frontier else 0}
+    _record(cfg, "ask", status, model, usage, fr, t0)
     out = {"status": status, "model": model, "answer": answer}
     if esc:
         out["reason"] = esc
@@ -274,12 +281,6 @@ def digest(cfg: Config, question: str, paths: list[str] | None = None, text: str
 
     esc = _escalation(answer)
     status = "escalated" if esc else "ok"
-    ledger.record("digest", status, model, usage,
-                  direct_est=ledger.estimate_tokens(raw_chars + len(answer), cfg.chars_per_token),
-                  returned_est=ledger.estimate_tokens(question + answer, cfg.chars_per_token),
-                  seconds=time.time() - t0,
-                  extra={"input_chars": raw_chars, "chunks": len(pieces),
-                         "compacted": bool(compacted)})
     out = {"status": status, "model": model, "answer": answer,
            "input_chars": raw_chars, "chunks": len(pieces)}
     if compacted:
@@ -293,6 +294,12 @@ def digest(cfg: Config, question: str, paths: list[str] | None = None, text: str
         out["reason"] = esc
     if errors:
         out["warnings"] = errors
+    # Directly, the frontier reads the whole input. Through HALO it writes the question and
+    # reads this result (answer + signals).
+    _record(cfg, "digest", status, model, usage,
+            {"direct_in": raw_chars, "direct_out": 0,
+             "halo_in": len(json.dumps(out, ensure_ascii=False)), "halo_out": len(question)},
+            t0, {"input_chars": raw_chars, "chunks": len(pieces), "compacted": bool(compacted)})
     return out
 
 
@@ -310,6 +317,18 @@ def extract_code(text: str) -> str | None:
     if stripped and not stripped.lower().startswith(("here", "sure", "i ", "the ")):
         return stripped + "\n"
     return None
+
+
+FAIL_COUNT_RES = [re.compile(p) for p in (
+    r"failures=(\d+)", r"errors=(\d+)",            # unittest
+    r"(\d+) failed", r"(\d+) errors?\b")]           # pytest
+
+
+def failure_score(output: str) -> int:
+    """Lower is better. Counts failing tests when the runner reports them; anything else
+    (syntax error, import error, crash) ranks below any attempt that ran the tests."""
+    counts = [int(m) for rx in FAIL_COUNT_RES for m in rx.findall(output)]
+    return sum(counts) if counts else 10**6
 
 
 def _inside(path: str, root: str) -> bool:
@@ -338,7 +357,7 @@ def _tail(text: str, lines: int = 40, chars: int = 3000) -> str:
 def code(cfg: Config, spec: str, target: str, check: str, *, workdir: str = ".",
          context_files: list[str] | None = None, max_iters: int | None = None,
          model: str | None = None, keep_on_fail: bool = False,
-         diff_mode: str = "stat") -> dict:
+         diff_mode: str = "stat", fallback: list[str] | None = None) -> dict:
     """Generate-verify loop: the local model writes `target` until `check` exits 0.
 
     The frontier model receives only a status, a diffstat (or full diff) and the check
@@ -347,7 +366,7 @@ def code(cfg: Config, spec: str, target: str, check: str, *, workdir: str = ".",
     """
     t0 = time.time()
     usage = llm.Usage()
-    model = model or cfg.model
+    model = model or cfg.code_model or cfg.model
     max_iters = max_iters or cfg.max_iters
     workdir = os.path.abspath(os.path.expanduser(workdir))
     path = target if os.path.isabs(target) else os.path.join(workdir, target)
@@ -366,51 +385,74 @@ def code(cfg: Config, spec: str, target: str, check: str, *, workdir: str = ".",
         return {"status": "error", "error": "; ".join(ctx_err)}
     rel = os.path.relpath(path, workdir)
 
-    current, feedback, last_out, attempts = original, "", "", 0
-    status, reason = "failed", ""
-    for attempt in range(1, max_iters + 1):
-        attempts = attempt
-        prompt = (f"Task:\n{spec}\n\nTarget file: {rel}\n"
-                  f"The following check command will be run from the project root and must "
-                  f"exit with status 0:\n  {check}\n\n")
-        if ctx_text:
-            prompt += f"Read-only context files:\n{ctx_text}\n\n"
-        prompt += (f"Current contents of {rel}:\n```\n{current}```\n" if current
-                   else f"{rel} does not exist yet.\n")
-        if feedback:
-            prompt += (f"\nYour previous version (shown above as current contents) FAILED the "
-                       f"check. Output of the check:\n```\n{feedback}\n```\n"
-                       f"Fix the problem and output the complete file again.\n")
-        try:
-            reply = llm.generate(cfg, prompt, system=CODE_SYSTEM, model=model, usage=usage,
-                                 temperature=0.2 if attempt == 1 else 0.5)
-        except llm.LocalModelError as e:
-            status, reason = "error", str(e)
+    # Cascade: each model gets a fresh start (a broken draft tends to anchor the next model
+    # to the same mistake); the best attempt across all of them is kept as a draft.
+    chain = [model] + [m for m in (fallback if fallback is not None else cfg.fallback_models)
+                       if m and m != model]
+    current, last_out, attempts = original, "", 0
+    status, reason, used = "failed", "", model
+    best = None  # (failure score, candidate, check output)
+    for used in chain:
+        current, feedback = original, ""
+        for attempt in range(1, max_iters + 1):
+            attempts += 1
+            prompt = (f"Task:\n{spec}\n\nTarget file: {rel}\n"
+                      f"The following check command will be run from the project root and "
+                      f"must exit with status 0:\n  {check}\n\n")
+            if ctx_text:
+                prompt += f"Read-only context files:\n{ctx_text}\n\n"
+            prompt += (f"Current contents of {rel}:\n```\n{current}```\n" if current
+                       else f"{rel} does not exist yet.\n")
+            if feedback:
+                prompt += (f"\nYour previous version (shown above as current contents) FAILED "
+                           f"the check. Output of the check:\n```\n{feedback}\n```\n"
+                           f"Fix the problem and output the complete file again.\n")
+            try:
+                reply = llm.generate(cfg, prompt, system=CODE_SYSTEM, model=used, usage=usage,
+                                     temperature=0.2 if attempt == 1 else 0.5)
+            except llm.LocalModelError as e:
+                status, reason = "error", str(e)
+                break
+            esc = _escalation(reply)
+            if esc:
+                status, reason = "escalated", esc
+                break
+            candidate = extract_code(reply)
+            if not candidate:
+                feedback = "Your reply did not contain a fenced code block with the file."
+                continue
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(candidate)
+            current = candidate
+            ok, last_out = _run_check(check, workdir, cfg.check_timeout)
+            if ok:
+                status = "passed"
+                break
+            score = failure_score(last_out)
+            if best is None or score <= best[0]:
+                best = (score, candidate, last_out)
+            feedback = _tail(last_out)
+        if status == "passed":
             break
-        esc = _escalation(reply)
-        if esc:
-            status, reason = "escalated", esc
-            break
-        candidate = extract_code(reply)
-        if not candidate:
-            feedback = "Your reply did not contain a fenced code block with the file."
-            continue
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(candidate)
-        current = candidate
-        ok, last_out = _run_check(check, workdir, cfg.check_timeout)
-        if ok:
-            status = "passed"
-            break
-        feedback = _tail(last_out)
+        # errors (Ollama down) and escalations also move on to the next model
 
+    if status != "passed" and best is not None:
+        current, last_out = best[1], best[2]
+    draft_rel = None
     if status != "passed" and not keep_on_fail:
+        if best is not None:
+            draft_rel = rel + ".halo-draft"
+            with open(path + ".halo-draft", "w", encoding="utf-8") as fh:
+                fh.write(best[1])
         if existed:
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(original)
         elif os.path.exists(path):
             os.remove(path)
+    elif status != "passed" and best is not None:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(best[1])
 
     diff = "".join(difflib.unified_diff(
         original.splitlines(keepends=True), current.splitlines(keepends=True),
@@ -418,26 +460,28 @@ def code(cfg: Config, spec: str, target: str, check: str, *, workdir: str = ".",
     added = sum(1 for l in diff.splitlines() if l.startswith("+") and not l.startswith("+++"))
     removed = sum(1 for l in diff.splitlines() if l.startswith("-") and not l.startswith("---"))
 
-    result = {"status": status, "model": model, "target": rel, "attempts": attempts,
+    result = {"status": status, "target": rel, "attempts": attempts, "model": used,
               "diffstat": f"{rel}: +{added} -{removed}"}
     if status == "passed":
-        result["check_summary"] = _tail(last_out, lines=5, chars=600)
+        result["check_summary"] = _tail(last_out, lines=3, chars=300)
         if diff_mode == "full":
             result["diff"] = diff
     else:
         result["reason"] = reason or f"check still failing after {attempts} attempt(s)"
         if last_out:
-            result["last_check_output"] = _tail(last_out, lines=25, chars=2000)
+            result["last_check_output"] = _tail(last_out, lines=15, chars=1200)
         result["file_restored"] = not keep_on_fail
+        if draft_rel:
+            result["draft"] = (f"{draft_rel} holds the best attempt (check output above); "
+                               f"fixing it is usually cheaper than rewriting")
 
-    cpt = cfg.chars_per_token
-    # Done directly, the frontier would read the current file, write the new one and read the
-    # check output. With HALO it writes the spec and reads `result`. Context files (usually
-    # tests the frontier wrote itself) cost the same either way, so they are left out; so are
-    # the frontier's own retries, which makes this estimate conservative.
-    direct = ledger.estimate_tokens(len(original) + len(current) + len(last_out), cpt)
-    returned = ledger.estimate_tokens(spec + check + str(result), cpt)
-    ledger.record("code", status, model, usage, direct_est=direct, returned_est=returned,
-                  seconds=time.time() - t0, extra={"attempts": attempts})
+    # Done directly, the frontier reads the current file and the check output and WRITES the
+    # new file (output tokens). With HALO it writes spec + check and reads `result`. Context
+    # files (usually tests the frontier wrote itself) cost the same either way, and the
+    # frontier's own retries are not counted, so the estimate is conservative.
+    _record(cfg, "code", status, used, usage,
+            {"direct_in": len(original) + len(last_out), "direct_out": len(current),
+             "halo_in": len(json.dumps(result)), "halo_out": len(spec) + len(check) + len(rel)},
+            t0, {"attempts": attempts})
     result["seconds"] = round(time.time() - t0, 1)
     return result

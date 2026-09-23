@@ -12,13 +12,17 @@ import uuid
 from . import llm
 from .config import Config
 
-# (min total VRAM GiB, model, note). First match wins. "tested" = benchmarked by the
-# maintainers for escalation discipline, long-log extraction and short reasoning.
+# (min total VRAM GiB, digest model, code model, note). First match wins. Measured on the
+# bundled benchmark (bench/): for code, qwen3.6:35b-a3b passed 13/14 vs 9/14 for
+# qwen3:30b-a3b, which in turn digests faster (prefill ~480 vs ~270 tok/s on P100).
 RECOMMENDATIONS = [
-    (20, "qwen3:30b-a3b-instruct-2507-q4_K_M", "MoE, ~19 GB, tested default"),
-    (13, "gpt-oss:20b", "MoE, ~13 GB, fastest prefill; weaker in non-English text"),
-    (9, "qwen3:14b", "dense, ~9 GB, untested with HALO"),
-    (4, "qwen3:4b-instruct", "dense, ~2.5 GB, OK for digest, weak for code"),
+    (44, "qwen3:30b-a3b-instruct-2507-q4_K_M", "qwen3.6:35b-a3b-q4_K_M",
+     "both stay resident"),
+    (24, "qwen3:30b-a3b-instruct-2507-q4_K_M", "qwen3.6:35b-a3b-q4_K_M",
+     "models swap between digest and code (~15 s reload from fast disk)"),
+    (13, "gpt-oss:20b", "gpt-oss:20b", "MoE ~13 GB; fastest prefill, weaker non-English"),
+    (9, "qwen3:14b", "qwen3:14b", "dense ~9 GB, untested with HALO"),
+    (4, "qwen3:4b-instruct", "qwen3:4b-instruct", "~2.5 GB; digest only, weak at code"),
 ]
 SLOW_PREFILL = 150  # tok/s; below this, digesting a long log takes minutes
 
@@ -43,10 +47,11 @@ def gpus() -> list[tuple[str, int]]:
     return res
 
 
-def recommend(vram_gib: float) -> tuple[str, str] | None:
-    for min_gib, model, note in RECOMMENDATIONS:
+def recommend(vram_gib: float) -> tuple[str, str, str] | None:
+    """(digest model, code model, note) for the given total VRAM."""
+    for min_gib, model, code_model, note in RECOMMENDATIONS:
         if vram_gib >= min_gib:
-            return model, note
+            return model, code_model, note
     return None
 
 
@@ -98,12 +103,19 @@ def run(cfg: Config, bench: bool = True) -> tuple[list[str], dict]:
     rec = recommend(vram) if g else None
     facts["recommended"] = rec[0] if rec else None
     if rec:
-        lines.append(f"  · recommended for {vram:.0f} GiB VRAM: {rec[0]} ({rec[1]})")
+        lines.append(f"  · recommended for {vram:.0f} GiB VRAM: digest {rec[0]}, code {rec[1]} "
+                     f"({rec[2]})")
 
     if cfg.model not in installed:
         bad(f"configured model {cfg.model} is not pulled — run: halo setup")
         return lines, facts
     lines.append(f"  ✓ configured model: {cfg.model}")
+    for m in [cfg.code_model, *cfg.fallback_models]:
+        if m and m != cfg.model:
+            if m in installed:
+                lines.append(f"  ✓ code/fallback model: {m}")
+            else:
+                bad(f"code/fallback model {m} is not pulled — run: ollama pull {m}")
 
     if bench:
         try:

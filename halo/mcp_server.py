@@ -53,8 +53,11 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "spec": {"type": "string", "description": "Precise requirements: signatures, "
-                         "behaviour, edge cases, allowed libraries."},
+                "spec": {"type": "string", "description": "SHORT requirements (aim for under "
+                         "~600 chars): what the tests do not already show - signatures, allowed "
+                         "libraries, constraints. Do not restate behaviour the test file in "
+                         "context_files already pins down; a long spec costs you the output "
+                         "tokens this tool is meant to save."},
                 "target": {"type": "string", "description": "File to create/overwrite, "
                            "relative to workdir."},
                 "check": {"type": "string", "description": "Shell command run in workdir; "
@@ -90,15 +93,43 @@ TOOLS = [
 ]
 
 
+def _roots(cfg) -> list[str]:
+    return [os.path.realpath(r) for r in [os.getcwd(), *map(os.path.expanduser, cfg.allowed_roots)]]
+
+
+def _outside(paths: list[str], roots: list[str]) -> list[str]:
+    bad = []
+    for p in paths:
+        rp = os.path.realpath(os.path.expanduser(p))
+        if not any(os.path.commonpath([rp, r]) == r for r in roots):
+            bad.append(p)
+    return bad
+
+
+def _denied(bad: list[str], roots: list[str]) -> dict:
+    return {"status": "error",
+            "error": f"outside the allowed directories {roots}: {bad}. HALO runs outside your "
+                     f"sandbox, so it only touches the project directory; the user can add "
+                     f"more with allowed_roots in ~/.config/halo/config.json."}
+
+
 def call_tool(name: str, args: dict) -> dict:
     cfg = config.load()
+    roots = _roots(cfg)
     if name == "halo_digest":
+        bad = _outside(args.get("paths") or [], roots)
+        if bad:
+            return _denied(bad, roots)
         return tasks.digest(cfg, args["question"], args.get("paths") or [],
                             args.get("text", ""), max_words=int(args.get("max_words", 200)),
                             compact=args.get("compact", "auto"))
     if name == "halo_code":
+        workdir = args.get("workdir") or os.getcwd()
+        bad = _outside([workdir, *(args.get("context_files") or [])], roots)
+        if bad:
+            return _denied(bad, roots)
         return tasks.code(cfg, args["spec"], args["target"], args["check"],
-                          workdir=args.get("workdir") or os.getcwd(),
+                          workdir=workdir,
                           context_files=args.get("context_files") or [],
                           max_iters=args.get("max_iters"),
                           diff_mode="full" if args.get("full_diff") else "stat")

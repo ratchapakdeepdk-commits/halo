@@ -199,22 +199,29 @@ def cmd_setup(a, cfg):
     cfg.ollama_url = url
     print(f"✓ Ollama at {url}")
 
-    model = a.model
-    if not model:
+    models = [a.model] if a.model else []
+    if not a.model:
         vram = sum(m for _, m in doctor.gpus()) / 1024
         rec = doctor.recommend(vram)
         if not rec:
             print(f"Only {vram:.0f} GiB VRAM detected; pass --model explicitly "
                   f"(e.g. qwen3:4b-instruct).")
             return 1
-        model = rec[0]
-        print(f"✓ {vram:.0f} GiB VRAM → recommended model {model} ({rec[1]})")
-    cfg.model = model
+        print(f"✓ {vram:.0f} GiB VRAM → digest model {rec[0]}, code model {rec[1]} ({rec[2]})")
+        cfg.model = rec[0]
+        cfg.code_model = "" if rec[1] == rec[0] else rec[1]
+        models = list(dict.fromkeys(rec[:2]))
+    else:
+        cfg.model, cfg.code_model = a.model, a.code_model or ""
+        if a.code_model:
+            models.append(a.code_model)
 
     installed = [m["name"] for m in llm.raw(cfg, "/api/tags").get("models", [])]
-    if model not in installed:
+    for model in models:
+        if model in installed:
+            continue
         if not (a.yes or input(f"Pull {model} now? [Y/n] ").strip().lower() in ("", "y")):
-            print("Not pulled. Pull it later with `ollama pull`.")
+            print(f"Not pulled. Pull it later with `ollama pull {model}`.")
         elif not _pull(cfg, model):
             return 1
     print(f"✓ config written to {config.save(cfg)}")
@@ -276,7 +283,8 @@ def main(argv=None):
     s.set_defaults(fn=cmd_doctor)
 
     s = sub.add_parser("setup", help="detect hardware, pull a model, write config")
-    s.add_argument("--model")
+    s.add_argument("--model", help="digest/ask model (default: pick from VRAM)")
+    s.add_argument("--code-model", help="model for `halo code` (default: same as --model)")
     s.add_argument("--url", help="Ollama URL (default: auto-detect)")
     s.add_argument("--claude", action="store_true", help="also register with Claude Code")
     s.add_argument("-y", "--yes", action="store_true")

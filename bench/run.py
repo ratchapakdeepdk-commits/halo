@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(HERE))
 from halo import config, ledger, tasks  # noqa: E402
 
 
-def run_task(cfg, name: str, model: str, iters: int) -> dict:
+def run_task(cfg, name: str, model: str | None, iters: int, fallback) -> dict:
     src = os.path.join(HERE, "tasks", name)
     with open(os.path.join(src, "task.json")) as fh:
         task = json.load(fh)
@@ -35,12 +35,12 @@ def run_task(cfg, name: str, model: str, iters: int) -> dict:
         check = f"{sys.executable} -m unittest -q test_task"
         res = tasks.code(cfg, task["spec"], task["target"], check, workdir=work,
                          context_files=[os.path.join(work, "test_task.py")],
-                         max_iters=iters, model=model)
+                         max_iters=iters, model=model, fallback=fallback)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     rec = ledger.read()[-1] if ledger.read() else {}
     return {"task": name, "status": res["status"], "attempts": res.get("attempts", 0),
-            "seconds": res.get("seconds", 0),
+            "seconds": res.get("seconds", 0), "model": res.get("model"),
             "local_tokens": rec.get("local_in", 0) + rec.get("local_out", 0),
             "frontier_direct_est": rec.get("frontier_direct_est", 0),
             "frontier_returned_est": rec.get("frontier_returned_est", 0),
@@ -53,18 +53,28 @@ def main():
     p.add_argument("-k", "--tasks", nargs="*")
     p.add_argument("-n", "--iters", type=int, default=3)
     p.add_argument("--repeat", type=int, default=1)
+    p.add_argument("--cascade", action="store_true",
+                   help="use the configured code_model + fallback_models chain")
     a = p.parse_args()
 
     cfg = config.load()
-    model = a.model or cfg.model
+    # Keep benchmark runs out of the user's real savings ledger.
+    os.makedirs(os.path.join(HERE, "results"), exist_ok=True)
+    ledger.LEDGER = os.path.join(HERE, "results", "ledger.jsonl")
+    if a.cascade:
+        model, fallback = None, None
+        label = " → ".join([cfg.code_model or cfg.model] + cfg.fallback_models)
+    else:
+        model, fallback = a.model or cfg.code_model or cfg.model, []
+        label = model
     names = a.tasks or sorted(os.listdir(os.path.join(HERE, "tasks")))
     rows = []
     for rep in range(a.repeat):
         for name in names:
-            r = run_task(cfg, name, model, a.iters)
+            r = run_task(cfg, name, model, a.iters, fallback)
             r["rep"] = rep
             rows.append(r)
-            print(f"  {name:<10} {r['status']:<9} attempts={r['attempts']} "
+            print(f"  {name:<10} {r['status']:<9} {str(r['model']):<28} attempts={r['attempts']} "
                   f"{r['seconds']:>6.1f}s  local={r['local_tokens']}", file=sys.stderr)
 
     ok = [r for r in rows if r["status"] == "passed"]
@@ -72,7 +82,7 @@ def main():
     # Tasks the worker failed still cost the frontier a full attempt: count their direct cost.
     hybrid = sum(r["frontier_returned_est"] + (0 if r["status"] == "passed"
                                                else r["frontier_direct_est"]) for r in rows)
-    summary = {"model": model, "tasks": len(rows), "passed": len(ok),
+    summary = {"model": label, "tasks": len(rows), "passed": len(ok),
                "pass_rate": len(ok) / len(rows) if rows else 0,
                "mean_attempts_when_passed": (sum(r["attempts"] for r in ok) / len(ok)) if ok else 0,
                "frontier_tokens_direct_est": direct, "frontier_tokens_hybrid_est": hybrid,
@@ -82,17 +92,17 @@ def main():
 
     os.makedirs(os.path.join(HERE, "results"), exist_ok=True)
     out = os.path.join(HERE, "results",
-                       f"{time.strftime('%Y%m%d-%H%M%S')}-{model.replace(':', '_').replace('/', '_')}.json")
+                       f"{time.strftime('%Y%m%d-%H%M%S')}-{label.replace(':', '_').replace('/', '_').replace(' → ', '+')}.json")
     with open(out, "w") as fh:
         json.dump({"summary": summary, "rows": rows}, fh, indent=1)
 
-    print(f"\n| task | status | attempts | seconds | local tok | frontier direct (est) | frontier via HALO (est) |")
-    print("|---|---|---|---|---|---|---|")
+    print(f"\n| task | status | model | attempts | seconds | local tok | frontier direct (est) | frontier via HALO (est) |")
+    print("|---|---|---|---|---|---|---|---|")
     for r in rows:
         via = r["frontier_returned_est"] + (0 if r["status"] == "passed" else r["frontier_direct_est"])
-        print(f"| {r['task']} | {r['status']} | {r['attempts']} | {r['seconds']:.0f} | "
+        print(f"| {r['task']} | {r['status']} | {r['model']} | {r['attempts']} | {r['seconds']:.0f} | "
               f"{r['local_tokens']} | {r['frontier_direct_est']} | {via} |")
-    print(f"\n**{model}**: {summary['passed']}/{summary['tasks']} passed, "
+    print(f"\n**{label}**: {summary['passed']}/{summary['tasks']} passed, "
           f"est. frontier-token reduction {summary['frontier_reduction_est']:.0%} "
           f"({direct} → {hybrid}), {summary['local_tokens']} local tokens, "
           f"{summary['seconds']:.0f}s total. Results: {os.path.relpath(out, os.path.dirname(HERE))}")

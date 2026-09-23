@@ -170,6 +170,36 @@ class TestCode(Base):
         tasks.code(self.cfg, "add", "new.py", f"{PY} -c 'import new; assert 0'", workdir=self.dir)
         self.assertFalse(os.path.exists(os.path.join(self.dir, "new.py")))
 
+    def test_cascade_to_fallback_model(self):
+        self.cfg.fallback_models = ["big-model"]
+        self.fake.replies = [lambda b: GOOD if b["model"] == "big-model" else BAD] * 10
+        r = tasks.code(self.cfg, "add", "mod.py", CHECK, workdir=self.dir, max_iters=2)
+        self.assertEqual(r["status"], "passed")
+        self.assertEqual(r["model"], "big-model")
+        self.assertEqual(r["attempts"], 3)
+        self.assertEqual([q["model"] for q in self.fake.requests],
+                         ["fake-model", "fake-model", "big-model"])
+        # the fallback model starts fresh, not from the first model's broken draft
+        self.assertNotIn("FAILED", self.fake.requests[2]["prompt"])
+
+    def test_best_draft_is_saved(self):
+        two_fail = "```python\ndef add(a, b):\n    return 0\n```"
+        check = (f"{PY} -c \"import sys, mod; f = (mod.add(2, 3) != 5) + (mod.add(1, 1) != 2); "
+                 f"print(f'failures={{f}}'); sys.exit(1 if f else 0)\"")
+        one_fail = "```python\ndef add(a, b):\n    return 2\n```"
+        self.fake.replies = [two_fail, one_fail, two_fail]
+        r = tasks.code(self.cfg, "add", "mod.py", check, workdir=self.dir)
+        self.assertEqual(r["status"], "failed")
+        self.assertIn("halo-draft", r["draft"])
+        with open(os.path.join(self.dir, "mod.py.halo-draft")) as fh:
+            self.assertIn("return 2", fh.read())  # best (fewest failures), not the last
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "mod.py")))
+
+    def test_failure_score(self):
+        self.assertEqual(tasks.failure_score("FAILED (failures=1, errors=2)"), 3)
+        self.assertEqual(tasks.failure_score("=== 2 failed, 5 passed ==="), 2)
+        self.assertGreater(tasks.failure_score("SyntaxError: invalid syntax"), 1000)
+
     def test_escalation_stops_loop(self):
         self.fake.replies = ["#ESCALATE: spec references unknown API"]
         r = tasks.code(self.cfg, "use frobnicate()", "mod.py", CHECK, workdir=self.dir)
@@ -193,12 +223,14 @@ class TestCode(Base):
 class TestLedger(Base):
     def test_only_successes_count_as_saved(self):
         u = type("U", (), {"prompt_tokens": 10, "output_tokens": 5, "calls": 1})()
-        ledger.record("digest", "ok", "m", u, direct_est=1000, returned_est=50, seconds=1)
-        ledger.record("code", "failed", "m", u, direct_est=900, returned_est=100, seconds=1)
+        ledger.record("digest", "ok", "m", u, seconds=1, chars_per_token=1.0,
+                      frontier={"direct_in": 1000, "halo_in": 40, "halo_out": 2})
+        ledger.record("code", "failed", "m", u, seconds=1, chars_per_token=1.0,
+                      frontier={"direct_out": 900, "halo_in": 100})
         s = ledger.summary(ledger.read(ledger.LEDGER))
-        self.assertEqual(s["frontier_saved_est"], 950)
+        self.assertEqual(s["frontier_saved_est"], 1000 - (40 + 5 * 2))
         self.assertEqual(s["total"]["tasks"], 2)
-        self.assertIn("Frontier tokens saved", ledger.format_summary(s))
+        self.assertIn("upper bound", ledger.format_summary(s))
 
 
 class TestRouter(unittest.TestCase):
@@ -228,12 +260,29 @@ class TestMCP(Base):
     def test_call_digest(self):
         self.fake.replies = ["answer"]
         p = self.write("x.txt", "hello")
-        with mock.patch.object(config, "load", return_value=self.cfg):
+        with mock.patch.object(config, "load", return_value=self.cfg), \
+                mock.patch("os.getcwd", return_value=self.dir):
             r = self.rpc("tools/call", {"name": "halo_digest",
                                         "arguments": {"question": "q", "paths": [p]}})
         payload = json.loads(r["result"]["content"][0]["text"])
         self.assertEqual(payload["answer"], "answer")
         self.assertFalse(r["result"]["isError"])
+
+    def test_paths_confined_to_project(self):
+        self.cfg.allowed_roots = []
+        outside = self.write("secret.txt", "token=abc")
+        with mock.patch.object(config, "load", return_value=self.cfg), \
+                mock.patch("os.getcwd", return_value=os.path.join(self.dir, "proj")):
+            os.makedirs(os.path.join(self.dir, "proj"), exist_ok=True)
+            r = self.rpc("tools/call", {"name": "halo_digest",
+                                        "arguments": {"question": "q", "paths": [outside]}})
+            payload = json.loads(r["result"]["content"][0]["text"])
+            self.assertEqual(payload["status"], "error")
+            self.assertIn("outside the allowed", payload["error"])
+            r = self.rpc("tools/call", {"name": "halo_code", "arguments": {
+                "spec": "x", "target": "a.py", "check": "true", "workdir": "/"}})
+            self.assertTrue(r["result"]["isError"])
+        self.assertEqual(self.fake.requests, [])
 
     def test_errors(self):
         self.assertEqual(self.rpc("nope")["error"]["code"], -32601)

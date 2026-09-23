@@ -1,6 +1,6 @@
 ---
 name: halo-delegate
-description: Delegate token-heavy routine work to a free local model through the HALO MCP tools (halo_digest, halo_code) instead of pulling large inputs into context or writing boilerplate yourself. Use when about to read a long log/file/command output, or when a task needs a well-specified single file (script, parser, converter, small function, fixture) that can be checked by a command.
+description: Use BEFORE writing any new self-contained file that tests or a command can check (e.g. "create X.py so the tests pass", a parser, converter, script, small module, fixture) - delegate it to the free local model with halo_code instead of generating it yourself. Also use BEFORE reading or grepping through any large log/file/command output - one halo_digest call returns the answer with exact counts. Saves frontier output tokens and turns.
 ---
 
 # Delegate routine work to the local model (HALO)
@@ -11,24 +11,34 @@ Writing a 150-line parser costs 150 lines of output tokens; `halo_code` returns 
 
 You stay in charge: plan, decide, review. The local model is a worker, not a manager.
 
-## Decision order (do not skip)
+## The cost model you are optimising
 
-1. **Deterministic tools first** — `grep`, `awk`, `jq`, `wc`, `sort | uniq -c`, `python -c`.
-   Free and exact. Never delegate what grep can answer ("lines with ERROR", "how many").
-2. **`halo_digest`** when understanding language over a large input is needed:
-   what happened in this log, which function handles X in these files, summarize this doc,
-   classify these records. Pass **paths**, never paste contents. Best pattern:
-   grep/tail to cut first, write the slice to a temp file, digest that.
-3. **`halo_code`** for a single file that is well specified and mechanically checkable:
-   boilerplate, CLI glue, parsers/format converters, small pure functions, test fixtures.
-   - Write the check yourself first (a small pytest file, or `python -c "...assert..."`).
-     A check that only imports the module is not a check.
-   - Put exact signatures, edge cases and allowed libraries in `spec`.
-   - Pass the test file and any interface it must match as `context_files`.
-   - `passed` → trust the tests, optionally skim the file. `failed`/`escalated` → the file
-     was restored; use `last_check_output` to do it yourself — do not retry blindly.
-4. **Do it yourself** for design, multi-file changes, debugging subtle issues,
-   security-sensitive code, and anything whose correctness cannot be checked by a command.
+Every tool call re-sends your whole context. Ten small grep calls on a 40k-token
+context cost ~400k tokens. **Fewer turns beat smaller turns.** One `halo_digest`
+call that answers the question, plus one targeted check, is the cheap path.
+
+## Decision order
+
+1. **A single deterministic command answers it exactly** (`grep -c`, `wc -l`, `jq`,
+   one-line `python -c`)? Run that one command. Do not start a grep-exploration series.
+2. **Open-ended question about a large input** (what happened in this log, which
+   errors and how often, what does this dir of files do, summarise this doc):
+   call **`halo_digest` first** with file paths. For logs it already does the
+   deterministic part for you: repeated lines are collapsed and `signals` lists
+   error/warning lines with **exact, code-computed counts and first/last timestamps**.
+   Then verify at most one or two critical claims with a targeted grep.
+3. **`halo_code`** for a single, well-specified, mechanically checkable file:
+   boilerplate, parsers/format converters, CLI glue, small pure functions, fixtures.
+   - Write the check first (small test file or `python -c "...assert..."`); an
+     import-only check is not a check. Pass the test file as `context_files` and keep
+     `spec` SHORT (only what the tests don't show: signatures, allowed libraries).
+     Your spec is output tokens - if it is as long as the code, just write the code.
+   - `passed` → trust the tests, optionally skim. `failed` → if a `.halo-draft`
+     exists, fix the draft (usually a few lines) instead of rewriting; `escalated`
+     → do it yourself.
+   - Savings grow with file size: for a 10-line function just write it yourself.
+4. **Do it yourself**: design, multi-file changes, subtle debugging,
+   security-sensitive code, anything a command cannot check.
 
 ## Trust rules
 
