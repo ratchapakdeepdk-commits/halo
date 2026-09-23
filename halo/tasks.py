@@ -17,6 +17,16 @@ from .config import Config
 
 ESCALATE_RE = re.compile(r"^\s*#ESCALATE\b[:\s]*(.*)", re.IGNORECASE | re.DOTALL)
 
+DIGEST_SYSTEM = (
+    "You extract information from raw material for a senior engineer who cannot see it. "
+    "Output terse plain-text bullet points containing ONLY facts present in the material: "
+    "quote exact lines, values, timestamps and counts. No advice, no recommendations, no "
+    "explanations of general concepts, no code, no headings, no emoji. Never guess causes "
+    "that the material does not state. A line starting with '[Nx, last: ...]' stands for N "
+    "similar lines (only numbers differ); always report N as the count for that line. If the material cannot answer the task, say so "
+    "in one line."
+)
+
 WORKER_SYSTEM = (
     "You are a local worker model assisting a more capable senior model. Be concise and "
     "factual. Never invent facts, numbers, file contents or command output that are not in "
@@ -77,7 +87,12 @@ def ask(cfg: Config, question: str, *, model: str | None = None,
 # ---------------------------------------------------------------- digest
 
 def _chunks(text: str, size: int):
-    """Split on line boundaries so logs and code are never cut mid-line."""
+    """Split on line boundaries so logs and code are never cut mid-line.
+
+    Chunks never exceed `size` and are balanced (16.6 KB + 0.4 KB becomes ~8.5 KB + 8.5 KB),
+    so no part is a near-empty scrap that the model answers with noise.
+    """
+    goal = -(-len(text) // -(-len(text) // size)) if len(text) > size else size
     buf, n = [], 0
     for line in text.splitlines(keepends=True):
         while len(line) > size:  # a single monster line (minified JSON...)
@@ -86,13 +101,80 @@ def _chunks(text: str, size: int):
                 buf, n = [], 0
             yield line[:size]
             line = line[size:]
-        if n + len(line) > size and buf:
+        if buf and (n + len(line) > size or n >= goal):
             yield "".join(buf)
             buf, n = [], 0
         buf.append(line)
         n += len(line)
     if buf:
         yield "".join(buf)
+
+
+TIME_RE = re.compile(r"\b\d{1,2}:\d{2}:\d{2}\b")
+TEMPLATE_RE = re.compile(r"0x[0-9a-fA-F]+|[0-9a-fA-F]{8,}|\d+")
+# Leading timestamp: syslog/journald ("Sep 23 10:20:01") or ISO-8601 ("2026-09-23T10:20:01Z").
+LEAD_TS_RE = re.compile(r"^\s*(\[?(?:[A-Z][a-z]{2}\s+\d{1,2}\s+\d{1,2}:\d{2}:\d{2}"
+                        r"|\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?)\]?)\s*")
+SIGNAL_RE = re.compile(r"error|exception|traceback|fatal|panic|fail|critical|warn|killed|"
+                       r"denied|refused|timed? ?out|segfault|oom|\b5\d\d\b", re.IGNORECASE)
+
+
+# "host prog[pid]: " prefix of syslog/journald lines, and traceback frame / source lines that
+# merely *mention* errors (e.g. File ".../_exception_handler.py") rather than report one.
+PROC_PREFIX_RE = re.compile(r"^(?:\S+\s+)?[\w.@/\-]+\[\d+\]:\s")
+FRAME_RE = re.compile(r"^(?:\s|File \")")
+
+
+def _is_signal(msg: str) -> bool:
+    body = PROC_PREFIX_RE.sub("", msg, count=1)
+    return bool(SIGNAL_RE.search(body)) and not FRAME_RE.match(body)
+
+
+def _split_ts(line: str) -> tuple[str, str]:
+    m = LEAD_TS_RE.match(line)
+    return (m.group(1).strip("[]"), line[m.end():]) if m else ("", line)
+
+
+def compact_log(text: str, max_signals: int = 15) -> tuple[str, int, int, list[dict]]:
+    """Collapse lines that differ only in numbers/hex ids into one line with a count.
+
+    Groups keep their first-occurrence order. A repeated line is shown as
+    "[18x, first: <ts>, last: <ts>] <message>" so a small model sees count and recency up
+    front. Also returns exact, code-computed "signals" (error/warning-like line groups with
+    counts and first/last timestamps) - numbers the LLM does not have to get right.
+    Returns (text, original_lines, kept_lines, signals).
+    """
+    lines = text.splitlines()
+    groups: dict[str, list] = {}
+    order = []
+    for line in lines:
+        ts, msg = _split_ts(line)
+        key = TEMPLATE_RE.sub("#", msg)
+        g = groups.get(key)
+        if g:
+            g[1] += 1
+            g[3] = ts or g[3]
+        else:
+            groups[key] = [msg, 1, ts, ts, line]
+            order.append(key)
+    out, signals = [], []
+    for key in order:
+        msg, n, first, last, raw = groups[key]
+        if n == 1:
+            out.append(raw)
+        elif first:
+            out.append(f"[{n}x, first: {first}, last: {last}] {msg}")
+        else:
+            out.append(f"[{n}x] {msg}")
+        if _is_signal(msg):
+            signals.append({"count": n, "first": first, "last": last, "line": msg.strip()[:200]})
+    signals.sort(key=lambda d: -d["count"])
+    return "\n".join(out) + "\n", len(lines), len(order), signals[:max_signals]
+
+
+def looks_like_log(text: str, sample: int = 400) -> bool:
+    lines = [l for l in text.splitlines()[:sample] if l.strip()]
+    return bool(lines) and sum(1 for l in lines if TIME_RE.search(l)) >= 0.5 * len(lines)
 
 
 def read_inputs(paths: list[str], text: str = "") -> tuple[str, list[str]]:
@@ -108,9 +190,23 @@ def read_inputs(paths: list[str], text: str = "") -> tuple[str, list[str]]:
     return "\n\n".join(parts), errors
 
 
+def _material_prompt(material: str, question: str, extra: str, part: str = "input") -> str:
+    # Instructions go AFTER the material: with the task on top of 16 KB of log, a small model
+    # forgets it by the time it answers and slips back into chat-assistant mode.
+    return (f"<material {part}>\n{material}\n</material>\n\n"
+            f"Task: {question}\n{extra}\n"
+            f"Reply with terse plain-text bullet points of facts from the material only "
+            f"(exact quotes, counts, timestamps). No advice, no explanations, no headings.")
+
+
 def digest(cfg: Config, question: str, paths: list[str] | None = None, text: str = "", *,
-           model: str | None = None, max_words: int = 200, progress=None) -> dict:
-    """Read a large input locally and return only what answers `question`."""
+           model: str | None = None, max_words: int = 200, progress=None,
+           compact: str = "auto", debug: bool = False) -> dict:
+    """Read a large input locally and return only what answers `question`.
+
+    compact: "auto" collapses repetitive log lines when the input looks like a log and
+    shrinks at least 2x; "on" always; "off" never (use for CSV/data where every row matters).
+    """
     t0 = time.time()
     usage = llm.Usage()
     body, errors = read_inputs(paths or [], text)
@@ -119,51 +215,80 @@ def digest(cfg: Config, question: str, paths: list[str] | None = None, text: str
     if not body:
         return {"status": "error", "error": "nothing to digest (no files and no text)"}
 
+    raw_chars = len(body)
+    compacted, signals = None, []
+    if compact == "on" or (compact == "auto" and looks_like_log(body)):
+        small, n_lines, n_kept, signals = compact_log(body)
+        if compact == "on" or len(small) * 2 <= len(body):
+            body = small
+            compacted = f"{n_lines} lines collapsed to {n_kept} line templates"
+            if signals:
+                scan = "\n".join(f"- {g['count']}x  first {g['first'] or '?'}  last "
+                                 f"{g['last'] or '?'}  | {g['line']}" for g in signals)
+                body = (f"Exact scan of error/warning-like lines (computed by a program, "
+                        f"counts are reliable):\n{scan}\n\nCompacted log:\n{body}")
+            if progress:
+                progress(f"compacted log: {compacted}")
+
     if model is None:
         model = cfg.bulk_model if (cfg.bulk_model and len(body) > cfg.bulk_chars) else cfg.model
     budget = int((cfg.num_ctx - RESERVE_TOKENS) * BUDGET_CHARS_PER_TOKEN)
     if budget <= 1000:
         return {"status": "error", "error": f"num_ctx {cfg.num_ctx} is too small"}
-    limit = f"Answer in at most {max_words} words. Quote exact lines/values when relevant."
+    limit = f"Answer in at most {max_words} words."
+    notes: list[str] = []
 
     try:
         pieces = list(_chunks(body, budget))
         if len(pieces) == 1:
-            answer = llm.generate(cfg, f"Task: {question}\n{limit}\n\n---\n{pieces[0]}",
-                                  system=WORKER_SYSTEM, model=model, usage=usage,
-                                  max_tokens=max_words * 4)
+            answer = llm.generate(cfg, _material_prompt(pieces[0], question, limit),
+                                  system=DIGEST_SYSTEM, model=model, usage=usage,
+                                  max_tokens=max_words * 4, temperature=0.1)
         else:
-            notes = []
             for i, piece in enumerate(pieces, 1):
                 if progress:
                     progress(f"part {i}/{len(pieces)}")
                 note = llm.generate(
-                    cfg,
-                    f"This is part {i} of {len(pieces)} of one input. Extract ONLY what is "
-                    f"relevant to the task below, quoting exact lines/values. If nothing is "
-                    f"relevant, reply '(nothing)'.\nTask: {question}\n\n---\n{piece}",
-                    system=WORKER_SYSTEM, model=model, usage=usage, max_tokens=NOTE_MAX_TOKENS)
+                    cfg, _material_prompt(
+                        piece, question,
+                        f"This is part {i} of {len(pieces)} of a larger input; extract only "
+                        f"what is relevant to the task. If nothing is, reply exactly "
+                        f"'(nothing)'.", part=f"part {i} of {len(pieces)}"),
+                    system=DIGEST_SYSTEM, model=model, usage=usage,
+                    max_tokens=NOTE_MAX_TOKENS, temperature=0.1)
                 if note and "(nothing)" not in note[:20] and not _escalation(note):
                     notes.append(f"[part {i}] {note}")
             if progress:
                 progress(f"merging {len(notes)} relevant note(s)")
             merged = "\n\n".join(notes) or "(no part contained relevant information)"
             answer = llm.generate(
-                cfg, f"Combine these notes extracted from parts of one input into a single "
-                     f"answer. Remove duplicates.\nTask: {question}\n{limit}\n\n---\n{merged}",
-                system=WORKER_SYSTEM, model=model, usage=usage, max_tokens=max_words * 4)
+                cfg, _material_prompt(
+                    merged, question,
+                    f"The material is notes extracted, in order, from consecutive parts of "
+                    f"one input. Combine them into one answer: merge duplicates, add up "
+                    f"counts across parts, keep exact quotes. {limit}", part="notes"),
+                system=DIGEST_SYSTEM, model=model, usage=usage, max_tokens=max_words * 4,
+                temperature=0.1)
     except llm.LocalModelError as e:
         return {"status": "error", "error": str(e)}
 
     esc = _escalation(answer)
     status = "escalated" if esc else "ok"
     ledger.record("digest", status, model, usage,
-                  direct_est=ledger.estimate_tokens(len(body) + len(answer), cfg.chars_per_token),
+                  direct_est=ledger.estimate_tokens(raw_chars + len(answer), cfg.chars_per_token),
                   returned_est=ledger.estimate_tokens(question + answer, cfg.chars_per_token),
                   seconds=time.time() - t0,
-                  extra={"input_chars": len(body), "chunks": len(pieces)})
+                  extra={"input_chars": raw_chars, "chunks": len(pieces),
+                         "compacted": bool(compacted)})
     out = {"status": status, "model": model, "answer": answer,
-           "input_chars": len(body), "chunks": len(pieces)}
+           "input_chars": raw_chars, "chunks": len(pieces)}
+    if compacted:
+        out["compacted"] = compacted + " (numbers normalised; pass compact='off' for exact data)"
+    if signals:
+        # Code-computed, exact: the frontier can trust these counts even if the prose is off.
+        out["signals"] = signals
+    if debug:
+        out["notes"] = notes
     if esc:
         out["reason"] = esc
     if errors:

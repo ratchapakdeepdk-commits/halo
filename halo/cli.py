@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -12,8 +13,38 @@ from . import __version__, config, doctor, ledger, llm, router, tasks
 SKILL_SRC = os.path.join(os.path.dirname(__file__), "skill", "SKILL.md")
 
 
-def _stdin_text() -> str:
-    return "" if sys.stdin.isatty() else sys.stdin.read()
+def _stdin_idle(wait: float = 0.3) -> bool:
+    """True if stdin has nothing to read shortly (e.g. an agent's idle socket)."""
+    import select
+    try:
+        return not select.select([sys.stdin], [], [], wait)[0]
+    except (OSError, ValueError):
+        return True
+
+
+def _stdin_text(files: list[str]) -> tuple[list[str], str]:
+    """Read stdin only when it is the input: '-f -' explicitly, or no -f and data is waiting.
+
+    Agents and CI often run commands with a non-tty stdin that never closes; reading it
+    unconditionally would hang `halo digest -f file` forever.
+    """
+    explicit = "-" in files
+    files = [f for f in files if f != "-"]
+    if sys.stdin is None or sys.stdin.isatty():
+        return files, ""
+    if explicit:
+        return files, sys.stdin.read()
+    if files:
+        return files, ""
+    try:
+        mode = os.fstat(sys.stdin.fileno()).st_mode
+    except (OSError, ValueError):
+        return files, ""
+    # A pipe or redirected file is deliberate input (wait for slow producers); anything else
+    # (sockets, /dev/null-like devices) only counts if data is already there.
+    if stat.S_ISFIFO(mode) or stat.S_ISREG(mode) or not _stdin_idle():
+        return files, sys.stdin.read()
+    return files, ""
 
 
 def _progress(msg: str):
@@ -48,8 +79,19 @@ def cmd_ask(a, cfg):
 
 
 def cmd_digest(a, cfg):
-    res = tasks.digest(cfg, " ".join(a.question), a.file, _stdin_text(), model=a.model,
-                       max_words=a.max_words, progress=_progress)
+    files, stdin = _stdin_text(a.file)
+    if not files and not stdin.strip():
+        print("halo digest: give -f FILE, or pipe input (use '-f -' for slow pipes)",
+              file=sys.stderr)
+        return 2
+    res = tasks.digest(cfg, " ".join(a.question), files, stdin, model=a.model,
+                       max_words=a.max_words, progress=_progress, compact=a.compact,
+                       debug=a.debug)
+    if a.debug and not a.json:
+        for i, n in enumerate(res.get("notes", []), 1):
+            print(f"--- note {i}\n{n}", file=sys.stderr)
+    if res.get("compacted") and not a.json:
+        print(f"[halo: {res['compacted']}]", file=sys.stderr)
     if sys.stderr.isatty() and res.get("chunks", 1) > 1:
         print(file=sys.stderr)
     return _emit(res, a.json)
@@ -77,13 +119,13 @@ def cmd_code(a, cfg):
 
 def cmd_auto(a, cfg):
     prompt = " ".join(a.question)
-    stdin = _stdin_text()
-    where, why = router.route(prompt, has_input=bool(a.file or stdin.strip()))
+    files, stdin = _stdin_text(a.file)
+    where, why = router.route(prompt, has_input=bool(files or stdin.strip()))
     if a.verbose or where == "frontier":
         print(f"[halo route: {where} — {why}]", file=sys.stderr)
     if where == "local":
-        if a.file or stdin.strip():
-            return _emit(tasks.digest(cfg, prompt, a.file, stdin), False)
+        if files or stdin.strip():
+            return _emit(tasks.digest(cfg, prompt, files, stdin), False)
         return _emit(tasks.ask(cfg, prompt, from_frontier=False), False)
     if not shutil.which("claude"):
         print("halo: this looks like frontier work but the `claude` CLI is not installed; "
@@ -198,6 +240,9 @@ def main(argv=None):
     s.add_argument("-f", "--file", action="append", default=[])
     s.add_argument("-m", "--model")
     s.add_argument("-w", "--max-words", type=int, default=200)
+    s.add_argument("--compact", choices=["auto", "on", "off"], default="auto",
+                   help="collapse repetitive log lines (auto: only for log-like input)")
+    s.add_argument("--debug", action="store_true", help="show per-chunk notes")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_digest)
 

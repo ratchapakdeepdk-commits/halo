@@ -72,7 +72,7 @@ class TestDigest(Base):
         self.cfg.num_ctx = 2000  # budget = (2000-1500)*2.5 = 1250 chars per chunk
         def reply(body):
             p = body["prompt"]
-            if p.startswith("This is part"):
+            if p.startswith("<material part"):
                 return "found NEEDLE=42" if "NEEDLE=42" in p else "(nothing)"
             return "NEEDLE is 42"
         self.fake.replies = [reply] * 50
@@ -91,6 +91,41 @@ class TestDigest(Base):
         text = "".join(f"line {i}\n" for i in range(1000)) + "x" * 5000 + "\n"
         self.assertEqual("".join(tasks._chunks(text, 700)), text)
         self.assertTrue(all(len(c) <= 700 for c in tasks._chunks(text, 700)))
+
+    def test_compact_log(self):
+        log = "".join(f"Sep 23 10:{i % 60:02d}:01 app[{100 + i}]: GET /health 200 in {i}ms\n"
+                      for i in range(500))
+        log += "Sep 23 11:00:00 app[9]: KeyError: 'llamacpp'\n"
+        self.assertTrue(tasks.looks_like_log(log))
+        small, n, kept, sig = tasks.compact_log(log)
+        self.assertEqual((n, kept), (501, 2))
+        self.assertIn("[500x, first: Sep 23 10:00:01, last: Sep 23 10:19:01]", small)
+        self.assertEqual(sig[0]["count"], 1); self.assertIn("KeyError", sig[0]["line"])
+        self.assertIn("KeyError: 'llamacpp'", small)  # the rare line survives verbatim
+        self.fake.replies = ["one KeyError"]
+        p = self.write("app.log", log)
+        r = tasks.digest(self.cfg, "errors?", [p])
+        self.assertIn("compacted", r)
+        self.assertIn("[500x, first:", self.fake.requests[0]["prompt"])
+        self.assertEqual(r["signals"][0]["count"], 1)
+
+    def test_signals_skip_traceback_frames(self):
+        log = ("Sep 23 10:00:01 host app[1]: Traceback (most recent call last):\n"
+               'Sep 23 10:00:01 host app[1]:   File "/x/_exception_handler.py", line 5, in f\n'
+               "Sep 23 10:00:01 host app[1]:     raise_error(x)\n"
+               "Sep 23 10:00:01 host app[1]: KeyError: 'k'\n") * 3
+        _, _, _, sig = tasks.compact_log(log)
+        lines = [g["line"] for g in sig]
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(any("KeyError" in l for l in lines))
+        self.assertFalse(any("File" in l for l in lines))
+
+    def test_csv_is_not_compacted(self):
+        csv = "".join(f"{i},{i * 2},{i % 7}\n" for i in range(2000))
+        self.assertFalse(tasks.looks_like_log(csv))
+        self.fake.replies = ["x"] * 50
+        r = tasks.digest(self.cfg, "sum of col 2?", text=csv)
+        self.assertNotIn("compacted", r)
 
     def test_missing_file(self):
         r = tasks.digest(self.cfg, "q", [os.path.join(self.dir, "nope.txt")])

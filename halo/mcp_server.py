@@ -30,6 +30,10 @@ TOOLS = [
                           "description": "Files to read (absolute or relative to cwd)."},
                 "text": {"type": "string", "description": "Inline text (optional)."},
                 "max_words": {"type": "integer", "default": 200},
+                "compact": {"type": "string", "enum": ["auto", "on", "off"], "default": "auto",
+                            "description": "Collapse repetitive log lines before reading "
+                            "(auto = only log-like input). Use 'off' for CSV/data where "
+                            "every exact value matters."},
             },
             "required": ["question"],
         },
@@ -90,7 +94,8 @@ def call_tool(name: str, args: dict) -> dict:
     cfg = config.load()
     if name == "halo_digest":
         return tasks.digest(cfg, args["question"], args.get("paths") or [],
-                            args.get("text", ""), max_words=int(args.get("max_words", 200)))
+                            args.get("text", ""), max_words=int(args.get("max_words", 200)),
+                            compact=args.get("compact", "auto"))
     if name == "halo_code":
         return tasks.code(cfg, args["spec"], args["target"], args["check"],
                           workdir=args.get("workdir") or os.getcwd(),
