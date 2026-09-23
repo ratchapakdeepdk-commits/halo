@@ -1,5 +1,6 @@
 """Minimal Ollama client (stdlib only). Tracks token usage for the ledger."""
 import json
+import time
 import urllib.error
 import urllib.request
 
@@ -53,7 +54,15 @@ def generate(cfg: Config, prompt: str, *, system: str = "", model: str | None = 
         payload["options"]["num_predict"] = max_tokens
     if temperature is not None:
         payload["options"]["temperature"] = temperature
-    d = _request(cfg, "/api/generate", payload, cfg.timeout)
+    try:
+        d = _request(cfg, "/api/generate", payload, cfg.timeout)
+    except LocalModelError as e:
+        # Ollama sometimes fails a request while swapping models in/out of VRAM; one retry
+        # after a pause fixes it. Unreachable server or 4xx errors are not retried.
+        if "HTTP 5" not in str(e):
+            raise
+        time.sleep(3)
+        d = _request(cfg, "/api/generate", payload, cfg.timeout)
     if usage is not None:
         usage.prompt_tokens += d.get("prompt_eval_count", 0)
         usage.output_tokens += d.get("eval_count", 0)

@@ -10,6 +10,8 @@ DATA_DIR = os.path.expanduser(os.environ.get("HALO_HOME", "~/.local/share/halo")
 
 @dataclass
 class Config:
+    # "hybrid" = delegate routine work to the local model; "frontier" = HALO switched off.
+    mode: str = "hybrid"
     ollama_url: str = "http://127.0.0.1:11434"
     model: str = "qwen3:30b-a3b-instruct-2507-q4_K_M"
     # Model for halo_code ("" = same as `model`) and further local models to try, in order,

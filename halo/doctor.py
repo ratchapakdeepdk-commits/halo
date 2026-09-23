@@ -4,6 +4,9 @@ Lessons baked in from real deployments: a wrong driver can silently push Ollama 
 fallback backend (Vulkan/CPU) that still "works" but prefills 15-20x slower, so we measure
 throughput instead of trusting that the GPU is being used.
 """
+import os
+import platform
+import re
 import shutil
 import subprocess
 import time
@@ -45,6 +48,58 @@ def gpus() -> list[tuple[str, int]]:
         except ValueError:
             pass
     return res
+
+
+def _run(cmd: list[str]) -> str:
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def system_ram_gib() -> float:
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30
+    except (ValueError, OSError, AttributeError):
+        pass
+    if platform.system() == "Windows":
+        out = _run(["powershell", "-NoProfile", "-Command",
+                    "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory"])
+        try:
+            return int(out.strip()) / 2**30
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def accelerator() -> dict:
+    """Memory a local model can use on this machine.
+
+    NVIDIA/AMD: total VRAM. Apple Silicon: ~70% of unified memory (macOS keeps the rest).
+    Otherwise CPU inference from system RAM (works, but prefill is slow).
+    """
+    g = gpus()
+    if g:
+        counts: dict = {}
+        for n, m in g:
+            counts[(n, m)] = counts.get((n, m), 0) + 1
+        detail = ", ".join(f"{c}× {n}" if c > 1 else n for (n, _), c in counts.items())
+        total = sum(m for _, m in g) / 1024
+        return {"kind": "nvidia", "gib": total, "detail": f"{detail} ({total:.0f} GiB)"}
+    if shutil.which("rocm-smi"):
+        total = sum(int(x) for x in re.findall(r"VRAM Total Memory \(B\):\s*(\d+)",
+                                                _run(["rocm-smi", "--showmeminfo", "vram"])))
+        if total:
+            return {"kind": "amd", "gib": total / 2**30, "detail": "AMD ROCm GPU(s)"}
+    if platform.system() == "Darwin" and platform.machine() == "arm64":
+        try:
+            mem = int(_run(["sysctl", "-n", "hw.memsize"]).strip()) / 2**30
+        except ValueError:
+            mem = 0.0
+        return {"kind": "apple", "gib": mem * 0.7,
+                "detail": f"Apple Silicon, {mem:.0f} GiB unified memory"}
+    ram = system_ram_gib()
+    return {"kind": "cpu", "gib": ram * 0.5, "detail": f"CPU only, {ram:.0f} GiB RAM (slow)"}
 
 
 def recommend(vram_gib: float) -> tuple[str, str, str] | None:

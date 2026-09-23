@@ -115,6 +115,9 @@ def _denied(bad: list[str], roots: list[str]) -> dict:
 
 def call_tool(name: str, args: dict) -> dict:
     cfg = config.load()
+    if cfg.mode != "hybrid" and name != "halo_stats":
+        return {"status": "off", "error": "HALO is switched to frontier-only mode by the user. "
+                                          "Do this step yourself."}
     roots = _roots(cfg)
     if name == "halo_digest":
         bad = _outside(args.get("paths") or [], roots)
@@ -161,7 +164,8 @@ def handle(msg: dict) -> dict | None:
     if method == "ping":
         return ok({})
     if method == "tools/list":
-        return ok({"tools": TOOLS})
+        # Frontier-only mode: offer nothing, so new sessions do not even see the tools.
+        return ok({"tools": TOOLS if config.load().mode == "hybrid" else []})
     if method == "tools/call":
         p = msg.get("params") or {}
         try:
@@ -172,7 +176,7 @@ def handle(msg: dict) -> dict | None:
         except Exception as e:  # report, never crash the server
             traceback.print_exc(file=sys.stderr)
             res = {"status": "error", "error": f"{type(e).__name__}: {e}"}
-        is_err = res.get("status") == "error"
+        is_err = res.get("status") in ("error", "off")
         return ok({"content": [{"type": "text", "text": json.dumps(res, ensure_ascii=False,
                                                                   indent=1)}],
                    "isError": is_err})

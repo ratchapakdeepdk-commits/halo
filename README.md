@@ -32,17 +32,44 @@ accepted only after **a command you chose exits 0**.
 
 ## Install
 
-Requirements: Python ≥ 3.10, [Ollama](https://ollama.com), and ideally a GPU (8 GB+ VRAM).
-HALO depends only on the Python standard library.
+Requirements: Python ≥ 3.10, [Ollama](https://ollama.com), and ideally a GPU (8 GB+ VRAM, or an
+Apple Silicon Mac). HALO depends only on the Python standard library.
 
+**Windows:** clone or download the repo, then double-click **`install.bat`**. It installs
+Python and Ollama if they are missing (via winget), installs HALO, picks and pulls models for
+your GPU, connects Claude Code, puts a **HALO** shortcut on the desktop and opens the control
+panel.
+
+**Linux / macOS:**
 ```bash
 git clone https://github.com/ratchapakdeepdk-commits/halo && cd halo
-./install.sh --claude      # installs `halo`, picks+pulls a model for your VRAM,
-                           # registers the MCP server and a delegation skill in Claude Code
-halo doctor                # checks backend and measures prefill/generation speed
+./install.sh               # same steps; Claude Code is connected if `claude` is installed
+halo gui                   # control panel
 ```
 
-`halo setup` recommends models from your total VRAM:
+## Control panel and modes
+
+`halo gui` (or the desktop shortcut) opens a local page at http://127.0.0.1:8765:
+
+- **Hybrid / Frontier only**: one switch. *Hybrid* lets Claude Code delegate routine work
+  to the local model. *Frontier only* turns HALO off completely: no tools, no rule, no
+  skill. The change takes effect in new Claude Code sessions. Same from the terminal:
+  `halo mode hybrid` / `halo mode frontier`.
+- Status of Ollama, your hardware and the Claude Code connection.
+- Model selection for digest, code and fallback, plus estimated savings.
+- **Auto-pick best for this machine** (`halo tune`), described below.
+
+## Which local model? Let the machine decide: `halo tune`
+
+A table of "model X for Y GB" is only a starting point. Speed and quality depend on the GPU,
+the driver and the backend. `halo tune` detects the hardware (NVIDIA, AMD ROCm, Apple Silicon
+unified memory, or CPU-only). It then runs every installed text model that fits through a
+log-reading test with a known answer and three coding tasks with unit tests. It saves the
+best digest model (correct, then fastest), the best code model (most tests passed, then
+fastest) and a fallback. To give it more to choose from, pull more candidates first, e.g.
+`ollama pull qwen3:30b-a3b-instruct-2507-q4_K_M`.
+
+`halo setup` starts from this table, based on total VRAM:
 
 | VRAM | digest model | code model | note |
 |---|---|---|---|
@@ -56,7 +83,9 @@ driver can silently push Ollama onto a fallback backend that runs 15–20× slow
 
 ## Use from Claude Code (MCP)
 
-After `./install.sh --claude` (or `halo setup --claude`), Claude Code gets four tools:
+The installers connect Claude Code automatically (or run `halo setup --claude`). HALO is
+registered for all projects, so a plain `claude` in any folder works hybrid. Claude Code
+gets four tools:
 
 | tool | what it does |
 |---|---|

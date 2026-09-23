@@ -188,7 +188,7 @@ def read_inputs(paths: list[str], text: str = "") -> tuple[str, list[str]]:
     parts, errors = [], []
     for p in paths or []:
         try:
-            with open(os.path.expanduser(p), errors="replace") as fh:
+            with open(os.path.expanduser(p), encoding="utf-8", errors="replace") as fh:
                 parts.append(f"===== {p} =====\n{fh.read()}")
         except OSError as e:
             errors.append(f"{p}: {e}")

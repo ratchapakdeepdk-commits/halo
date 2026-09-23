@@ -8,9 +8,8 @@ import subprocess
 import sys
 import time
 
-from . import __version__, config, doctor, ledger, llm, router, tasks
+from . import __version__, config, doctor, integration, ledger, llm, router, tasks
 
-SKILL_SRC = os.path.join(os.path.dirname(__file__), "skill", "SKILL.md")
 
 
 def _stdin_idle(wait: float = 0.3) -> bool:
@@ -172,22 +171,6 @@ def _pull(cfg, model: str) -> bool:
         return False
 
 
-def install_claude() -> int:
-    if not shutil.which("claude"):
-        print("  `claude` CLI not found — skipping Claude Code integration")
-        return 1
-    exe = shutil.which("halo-mcp")
-    cmd = [exe] if exe else [sys.executable, "-m", "halo.mcp_server"]
-    subprocess.call(["claude", "mcp", "remove", "--scope", "user", "halo"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    rc = subprocess.call(["claude", "mcp", "add", "--scope", "user", "halo", "--", *cmd])
-    dst = os.path.expanduser("~/.claude/skills/halo-delegate")
-    os.makedirs(dst, exist_ok=True)
-    shutil.copy(SKILL_SRC, os.path.join(dst, "SKILL.md"))
-    print(f"  ✓ MCP server registered (user scope) and skill installed to {dst}")
-    return rc
-
-
 def cmd_setup(a, cfg):
     if a.url:
         cfg.ollama_url = a.url.rstrip("/")
@@ -226,9 +209,27 @@ def cmd_setup(a, cfg):
             return 1
     print(f"✓ config written to {config.save(cfg)}")
     if a.claude:
-        install_claude()
+        integration.install_claude(cfg.mode)
     print("\nNext: `halo doctor` to benchmark, `halo stats` to see savings.")
     return 0
+
+
+def cmd_mode(a, cfg):
+    if a.mode:
+        integration.set_mode(a.mode)
+        print(f"mode: {a.mode} — takes full effect in new Claude Code sessions")
+    st = integration.status()
+    if not a.mode:
+        print(f"mode: {st['mode']}")
+    print(f"  rule in ~/.claude/CLAUDE.md: {'yes' if st['rule_installed'] else 'no'}, "
+          f"skill: {'yes' if st['skill_installed'] else 'no'}")
+    return 0
+
+
+def cmd_tune(a, cfg):
+    from . import tune
+    res = tune.run(cfg, models=a.model or None, apply=not a.dry_run)
+    return 0 if res.get("chosen") and res["chosen"]["model"] else 1
 
 
 def main(argv=None):
@@ -290,10 +291,31 @@ def main(argv=None):
     s.add_argument("-y", "--yes", action="store_true")
     s.set_defaults(fn=cmd_setup)
 
+    s = sub.add_parser("tune", help="benchmark installed models on this machine, pick the best")
+    s.add_argument("-m", "--model", action="append", help="only test these (repeatable)")
+    s.add_argument("--dry-run", action="store_true", help="report only, keep current config")
+    s.set_defaults(fn=cmd_tune)
+
+    s = sub.add_parser("gui", help="open the control panel in your browser")
+    s.add_argument("--host", default="127.0.0.1")
+    s.add_argument("--port", type=int, default=8765)
+    s.add_argument("--no-browser", action="store_true")
+    s.set_defaults(fn=lambda a, cfg: __import__("halo.gui").gui.serve(
+        a.host, a.port, not a.no_browser) or 0)
+
+    s = sub.add_parser("mode", help="show or switch: hybrid | frontier (HALO off)")
+    s.add_argument("mode", nargs="?", choices=integration.MODES)
+    s.set_defaults(fn=cmd_mode)
+
     s = sub.add_parser("mcp", help="run the MCP server on stdio")
     s.set_defaults(fn=lambda a, cfg: __import__("halo.mcp_server").mcp_server.main() or 0)
 
     a = p.parse_args(argv)
+    for stream in (sys.stdout, sys.stderr):  # Windows code pages cannot print ✓ / →
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     try:
         sys.exit(a.fn(a, config.load()))
     except KeyboardInterrupt:

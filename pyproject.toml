@@ -21,4 +21,4 @@ halo-mcp = "halo.mcp_server:main"
 packages = ["halo"]
 
 [tool.setuptools.package-data]
-halo = ["skill/SKILL.md"]
+halo = ["skill/SKILL.md", "tunedata/*/*"]

@@ -1,0 +1,3 @@
+install.bat text eol=crlf
+HALO.bat text eol=crlf
+*.ps1 text eol=crlf

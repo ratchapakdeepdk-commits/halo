@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One-command install: halo CLI + MCP server, model pull, optional Claude Code wiring.
 #   curl -fsSL <raw url>/install.sh | bash            (or ./install.sh from a clone)
-#   ./install.sh --claude                             also register with Claude Code
+#   (Claude Code is connected automatically when the `claude` CLI is installed)
 set -euo pipefail
 REPO_URL="${HALO_REPO:-https://github.com/ratchapakdeepdk-commits/halo}"
 
@@ -25,5 +25,8 @@ else
 fi
 
 export PATH="$HOME/.local/bin:$PATH"
-halo setup --yes "$@"
+if command -v claude >/dev/null; then halo setup --yes --claude "$@"; else halo setup --yes "$@"; fi
 halo doctor || true
+echo
+echo "Done. Open the control panel with:  halo gui"
+echo "Optional: 'halo tune' tests which local models work best on this machine."
