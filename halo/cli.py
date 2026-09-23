@@ -2,13 +2,14 @@
 import argparse
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
 import sys
 import time
 
-from . import __version__, config, doctor, integration, ledger, llm, router, tasks
+from . import __version__, catalog, config, doctor, integration, ledger, llm, router, tasks
 
 
 
@@ -158,17 +159,61 @@ def _detect_url(cfg) -> str | None:
     return None
 
 
-def _pull(cfg, model: str) -> bool:
-    print(f"pulling {model} (this can take a while)...")
-    if shutil.which("ollama"):
-        env = dict(os.environ, OLLAMA_HOST=cfg.ollama_url)
-        return subprocess.call(["ollama", "pull", model], env=env) == 0
-    try:
-        llm.raw(cfg, "/api/pull", {"model": model, "stream": False}, timeout=7200)
-        return True
-    except llm.LocalModelError as e:
-        print(f"  pull failed: {e}")
-        return False
+def print_catalog(hw: dict, installed: list[str]) -> list:
+    """Numbered table of catalog models that fit this machine; returns them in order."""
+    fits = catalog.fitting(hw["gib"], hw["kind"] == "cpu")
+    recs = {m.name for m in catalog.recommended(hw["gib"], hw["kind"] == "cpu")}
+    print("\n  #  model                                  size   good at / tested with HALO")
+    for i, m in enumerate(fits, 1):
+        mark = "★" if m.name in recs else " "
+        have = " [installed]" if m.name in installed else ""
+        print(f"{mark}{i:>3}  {m.name:<38} {m.size_gib:>4.1f}G  {catalog.describe(m)}{have}")
+    print("  ★ = recommended for this machine\n")
+    return fits
+
+
+def choose_models(hw: dict, installed: list[str], interactive: bool) -> list[str]:
+    recs = [m.name for m in catalog.recommended(hw["gib"], hw["kind"] == "cpu")]
+    fits = print_catalog(hw, installed) if interactive else catalog.fitting(hw["gib"])
+    if not interactive or not fits:
+        return recs
+    while True:
+        ans = input("Pick models by number, e.g. 1,3 (Enter = ★ recommended): ").strip()
+        if not ans:
+            return recs
+        try:
+            idx = [int(x) for x in re.split(r"[,\s]+", ans) if x]
+            picked = [fits[i - 1].name for i in idx if 1 <= i <= len(fits)]
+        except ValueError:
+            picked = []
+        if picked:
+            return list(dict.fromkeys(picked))
+        print("  please enter numbers from the list")
+
+
+def assign_roles(cfg, chosen: list[str]) -> None:
+    """Digest = first chosen reader, code = first chosen coder, other coders = fallback."""
+    info = [(n, catalog.by_name(n)) for n in chosen]
+    role = lambda m, r: m is None or m.good_at in (r, "both")  # unknown models: any role
+    digest = next((n for n, m in info if role(m, "digest")), chosen[0])
+    code = next((n for n, m in info if role(m, "code")), digest)
+    cfg.model = digest
+    cfg.code_model = "" if code == digest else code
+    cfg.fallback_models = [n for n, m in info if role(m, "code") and n not in (code,)][:1]
+
+
+def cmd_models(a, cfg):
+    hw = doctor.accelerator()
+    installed = [m["name"] for m in llm.raw(cfg, "/api/tags").get("models", [])]
+    if not a.pull:
+        print(f"{hw['detail']} → about {hw['gib']:.0f} GiB for models")
+        print_catalog(hw, installed)
+        print("Download with:  halo models --pull NAME [NAME ...]   then: halo tune")
+        return 0
+    ok = True
+    for name in a.pull:
+        ok &= llm.pull(cfg, name, progress=lambda m: print(f"  {m}"))
+    return 0 if ok else 1
 
 
 def cmd_setup(a, cfg):
@@ -182,31 +227,32 @@ def cmd_setup(a, cfg):
     cfg.ollama_url = url
     print(f"✓ Ollama at {url}")
 
-    models = [a.model] if a.model else []
-    if not a.model:
-        vram = sum(m for _, m in doctor.gpus()) / 1024
-        rec = doctor.recommend(vram)
-        if not rec:
-            print(f"Only {vram:.0f} GiB VRAM detected; pass --model explicitly "
-                  f"(e.g. qwen3:4b-instruct).")
-            return 1
-        print(f"✓ {vram:.0f} GiB VRAM → digest model {rec[0]}, code model {rec[1]} ({rec[2]})")
-        cfg.model = rec[0]
-        cfg.code_model = "" if rec[1] == rec[0] else rec[1]
-        models = list(dict.fromkeys(rec[:2]))
-    else:
-        cfg.model, cfg.code_model = a.model, a.code_model or ""
-        if a.code_model:
-            models.append(a.code_model)
-
     installed = [m["name"] for m in llm.raw(cfg, "/api/tags").get("models", [])]
-    for model in models:
+    if a.model:
+        chosen = [a.model] + ([a.code_model] if a.code_model else [])
+    else:
+        hw = doctor.accelerator()
+        print(f"✓ {hw['detail']} → about {hw['gib']:.0f} GiB for models")
+        interactive = not a.yes and sys.stdin is not None and sys.stdin.isatty()
+        chosen = choose_models(hw, installed, interactive)
+        if not chosen:
+            print("No model fits this machine's memory; pass --model explicitly.")
+            return 1
+    for model in chosen:
         if model in installed:
             continue
-        if not (a.yes or input(f"Pull {model} now? [Y/n] ").strip().lower() in ("", "y")):
-            print(f"Not pulled. Pull it later with `ollama pull {model}`.")
-        elif not _pull(cfg, model):
+        print(f"downloading {model} ...")
+        if not llm.pull(cfg, model, progress=lambda m: print(f"  {m}")):
             return 1
+    assign_roles(cfg, chosen)
+    print(f"✓ digest model: {cfg.model}\n✓ code model:   {cfg.code_model or cfg.model}"
+          + (f"\n✓ fallback:     {', '.join(cfg.fallback_models)}" if cfg.fallback_models else ""))
+    if len(chosen) > 1 and not a.model and not a.yes and sys.stdin.isatty():
+        if input("Measure the chosen models on this machine now and let HALO assign the "
+                 "roles (a few minutes each)? [y/N] ").strip().lower() == "y":
+            from . import tune
+            config.save(cfg)
+            tune.run(cfg, models=chosen)
     print(f"✓ config written to {config.save(cfg)}")
     if a.claude:
         integration.install_claude(cfg.mode)
@@ -290,6 +336,10 @@ def main(argv=None):
     s.add_argument("--claude", action="store_true", help="also register with Claude Code")
     s.add_argument("-y", "--yes", action="store_true")
     s.set_defaults(fn=cmd_setup)
+
+    s = sub.add_parser("models", help="list local models that fit this machine, or download")
+    s.add_argument("--pull", nargs="+", metavar="NAME")
+    s.set_defaults(fn=cmd_models)
 
     s = sub.add_parser("tune", help="benchmark installed models on this machine, pick the best")
     s.add_argument("-m", "--model", action="append", help="only test these (repeatable)")

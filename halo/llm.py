@@ -73,3 +73,63 @@ def generate(cfg: Config, prompt: str, *, system: str = "", model: str | None = 
 def raw(cfg: Config, path: str, payload: dict | None = None, timeout: int = 30):
     """Direct API access for doctor/setup (tags, ps, pull...)."""
     return _request(cfg, path, payload, timeout)
+
+
+STALL_SECONDS = 120
+
+
+def pull(cfg: Config, name: str, progress=None, attempts: int = 6) -> bool:
+    """Download a model through Ollama's API, reporting progress roughly every 10%.
+
+    Ollama downloads sometimes stall near the end; a stalled stream (no new bytes for
+    STALL_SECONDS) is dropped and the pull restarted, which resumes from the partial files.
+    """
+    for attempt in range(1, attempts + 1):
+        result = _pull_once(cfg, name, progress)
+        if result is not None:
+            return result
+        if progress:
+            progress(f"{name}: download stalled, resuming (attempt {attempt + 1}/{attempts})")
+    return False
+
+
+def _pull_once(cfg: Config, name: str, progress) -> bool | None:
+    """True = done, False = hard error, None = stalled (retry)."""
+    req = urllib.request.Request(cfg.ollama_url + "/api/pull",
+                                 data=json.dumps({"model": name, "stream": True}).encode(),
+                                 headers={"Content-Type": "application/json"})
+    last_pct, best, since = -10, -1, time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=STALL_SECONDS) as r:
+            for line in r:
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                if d.get("error"):
+                    if progress:
+                        progress(f"{name}: {d['error']}")
+                    return False
+                if d.get("status") == "success":
+                    if progress:
+                        progress(f"{name}: ready")
+                    return True
+                total, done = d.get("total"), d.get("completed")
+                if total and done is not None:
+                    if done > best:
+                        best, since = done, time.time()
+                    elif time.time() - since > STALL_SECONDS:
+                        return None
+                    pct = int(100 * done / total)
+                    if progress and pct >= last_pct + 10:
+                        last_pct = pct
+                        progress(f"{name}: {pct}% of {total / 2**30:.1f} GiB")
+    except TimeoutError:
+        return None
+    except (urllib.error.URLError, OSError) as e:
+        if "timed out" in str(e):
+            return None
+        if progress:
+            progress(f"{name}: download failed: {e}")
+        return False
+    return None

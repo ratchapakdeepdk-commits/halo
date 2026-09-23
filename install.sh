@@ -25,7 +25,10 @@ else
 fi
 
 export PATH="$HOME/.local/bin:$PATH"
-if command -v claude >/dev/null; then halo setup --yes --claude "$@"; else halo setup --yes "$@"; fi
+# Interactive when run from a terminal (pick models from a list); `curl | bash` uses the
+# recommended models automatically.
+if command -v claude >/dev/null; then halo setup --claude "$@" </dev/tty 2>/dev/null || halo setup --yes --claude "$@"
+else halo setup "$@" </dev/tty 2>/dev/null || halo setup --yes "$@"; fi
 halo doctor || true
 echo
 echo "Done. Open the control panel with:  halo gui"

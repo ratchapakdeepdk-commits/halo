@@ -68,7 +68,8 @@ if ($userPath -notlike "*$scripts*") {
 
 # 4. Pick + pull models for this GPU, connect Claude Code if it is installed
 if (-not $CiSmoke) {
-    $setupArgs = @("-m", "halo", "setup", "--yes")
+    # Interactive: shows the models that fit this PC and lets you pick (Enter = recommended).
+    $setupArgs = @("-m", "halo", "setup")
     if (Have claude) { $setupArgs += "--claude" }
     else { Write-Host "   (Claude Code not found: HALO works from the terminal; run 'halo setup --claude' after installing Claude Code.)" }
     & $py @setupArgs

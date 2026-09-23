@@ -106,6 +106,38 @@ class TestTune(Env):
         self.assertEqual(err["count"], truth["errors"])
 
 
+class TestCatalog(Env):
+    def test_recommendations_fit_budget(self):
+        from halo import catalog
+        for budget in (4, 8, 12, 16, 24, 32, 48):
+            picks = catalog.recommended(budget)
+            self.assertTrue(picks, budget)
+            self.assertTrue(all(m.need_gib <= budget for m in picks), budget)
+        self.assertTrue(all(m.size_gib <= 9 for m in catalog.fitting(64, cpu_only=True)))
+
+    def test_assign_roles(self):
+        from halo import cli
+        cfg = config.load()
+        cli.assign_roles(cfg, ["qwen3.6:35b-a3b-q4_K_M", "qwen3:30b-a3b-instruct-2507-q4_K_M",
+                               "gpt-oss:20b"])
+        self.assertEqual((cfg.model, cfg.code_model, cfg.fallback_models),
+                         ("qwen3:30b-a3b-instruct-2507-q4_K_M", "qwen3.6:35b-a3b-q4_K_M",
+                          ["gpt-oss:20b"]))
+        cli.assign_roles(cfg, ["qwen3:8b"])
+        self.assertEqual((cfg.model, cfg.code_model, cfg.fallback_models), ("qwen3:8b", "", []))
+
+    def test_pull_progress_and_error(self):
+        from halo import llm
+        msgs = []
+        self.fake.pull_lines = [{"status": "pulling", "total": 100, "completed": 50},
+                                {"status": "pulling", "total": 100, "completed": 100},
+                                {"status": "success"}]
+        self.assertTrue(llm.pull(config.load(), "m", progress=msgs.append))
+        self.assertIn("m: ready", msgs)
+        self.fake.pull_lines = [{"error": "pull model manifest: file does not exist"}]
+        self.assertFalse(llm.pull(config.load(), "nope", progress=msgs.append))
+
+
 class TestGui(Env):
     def test_token_required_and_mode_switch(self):
         srv = gui.ThreadingHTTPServer(("127.0.0.1", 0), gui.Handler)

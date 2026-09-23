@@ -12,7 +12,7 @@ import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import __version__, config, doctor, integration, ledger, llm
+from . import __version__, catalog, config, doctor, integration, ledger, llm
 
 TOKEN = secrets.token_urlsafe(16)
 _job = {"name": None, "log": [], "running": False, "started": 0}
@@ -37,11 +37,19 @@ def status() -> dict:
         installed, ollama = [], False
     s = ledger.summary(ledger.read())
     t = s["total"]
+    hw = doctor.accelerator()
+    cpu = hw["kind"] == "cpu"
+    recs = {m.name for m in catalog.recommended(hw["gib"], cpu)}
+    choices = [{"name": m.name, "size": m.size_gib, "good_at": m.good_at, "note": m.note,
+                "thai": m.thai, "moe": m.moe, "tested": m.tested,
+                "installed": m.name in installed, "recommended": m.name in recs}
+               for m in catalog.fitting(hw["gib"], cpu)]
     return {
         "version": __version__,
         "mode": cfg.mode,
         "ollama": {"ok": ollama, "url": cfg.ollama_url},
-        "hardware": doctor.accelerator(),
+        "hardware": hw,
+        "catalog": choices,
         "models": {"model": cfg.model, "code_model": cfg.code_model,
                    "fallback_models": cfg.fallback_models, "installed": installed},
         "claude": dict(integration.status(), mcp_registered=_mcp_registered()),
@@ -77,6 +85,17 @@ def _start_job(name: str, fn):
 def _tune(log):
     from . import tune
     tune.run(config.load(), progress=log)
+
+
+def _pull_job(names):
+    def run(log):
+        cfg = config.load()
+        for n in names:
+            log(f"downloading {n} ...")
+            if not llm.pull(cfg, n, progress=log):
+                log(f"{n}: failed")
+        log("Tip: press 'Auto-pick best for this machine' to measure them and assign roles.")
+    return run
 
 
 def _doctor(log):
@@ -134,6 +153,14 @@ class Handler(BaseHTTPRequestHandler):
                 cfg.fallback_models = [m for m in body["fallback_models"] if m in installed]
             config.save(cfg)
             self._send(status())
+        elif self.path == "/api/pull":
+            allowed = {m.name for m in catalog.CATALOG}
+            names = [n for n in body.get("names", []) if n in allowed]
+            if not names:
+                self._send({"error": "nothing selected"}, code=400)
+                return
+            ok = _start_job("pull", _pull_job(names))
+            self._send({"started": ok}, code=200 if ok else 409)
         elif self.path in ("/api/tune", "/api/doctor"):
             ok = _start_job(self.path[5:], _tune if self.path == "/api/tune" else _doctor)
             self._send({"started": ok}, code=200 if ok else 409)
@@ -195,6 +222,12 @@ select{width:100%;padding:8px;border-radius:8px;border:1px solid var(--line);bac
 .btn{border:1px solid var(--line);background:var(--bg);color:var(--text);padding:8px 14px;border-radius:8px;
 font:inherit;cursor:pointer}.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 .btn:disabled{opacity:.5;cursor:default}
+.cat{width:100%;border-collapse:collapse;font-size:14px}
+.cat td{padding:7px 6px;border-bottom:1px solid var(--line);vertical-align:top}
+.cat tr:last-child td{border-bottom:0}.cat .nm{font-family:var(--mono);font-size:13px;overflow-wrap:anywhere}
+.cat .sub{color:var(--muted);font-size:12.5px}.tag{display:inline-block;font-size:11.5px;padding:1px 7px;border-radius:99px;
+border:1px solid var(--line);margin:2px 4px 0 0;color:var(--muted)}.tag.t{border-color:var(--good);color:var(--good)}
+.cat input{width:17px;height:17px;margin-top:2px}
 pre{font:12.5px/1.45 var(--mono);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;
 max-height:260px;overflow:auto;white-space:pre-wrap;margin:10px 0 0}
 </style></head><body><main>
@@ -211,7 +244,13 @@ max-height:260px;overflow:auto;white-space:pre-wrap;margin:10px 0 0}
  <section class="card"><h2>Claude Code</h2><div id="claude"></div></section>
  <section class="card wide"><h2>Savings</h2><div class="stat" id="stats"></div>
   <p class="note">Local tokens are measured. The frontier figure is an upper bound (it assumes the frontier would have read the whole input).</p></section>
- <section class="card wide"><h2>Models</h2>
+ <section class="card wide"><h2>Download local models</h2>
+  <p class="note" style="margin:0 0 8px">Models that fit this machine. ★ = recommended. Tick the ones you want and press Download.</p>
+  <div id="cat"></div>
+  <div class="btns"><button class="btn primary" id="b-pull" onclick="pullSel()">Download selected</button>
+   <button class="btn" onclick="tickRec()">Select recommended</button></div>
+ </section>
+ <section class="card wide"><h2>Models in use</h2>
   <div class="sel3">
    <div><label for="s-model">Digest / ask</label><select id="s-model"></select></div>
    <div><label for="s-code">Code</label><select id="s-code"></select></div>
@@ -249,7 +288,18 @@ function render(s){S=s;$("ver").textContent="v"+s.version;
  if(!document.activeElement||document.activeElement.tagName!=="SELECT"){
   opts($("s-model"),inst,m.model);opts($("s-code"),inst,m.code_model,"(same as digest)");opts($("s-fb"),inst,m.fallback_models[0]||"","(none)")}
  const j=s.job,lg=$("log");if(j.name){lg.hidden=false;lg.textContent=j.log.join("\n");lg.scrollTop=lg.scrollHeight}
- $("b-tune").disabled=$("b-doc").disabled=j.running}
+ $("b-tune").disabled=$("b-doc").disabled=$("b-pull").disabled=j.running;
+ if(!document.querySelector("#cat input:checked:not(:disabled)")) renderCat(s.catalog)}
+function renderCat(list){$("cat").innerHTML=`<table class="cat">`+list.map(m=>{
+ const tags=[m.good_at==="both"?"digest + code":m.good_at, m.moe?"MoE (fast)":"", m.thai?"":"weak Thai"].filter(Boolean)
+  .map(t=>`<span class="tag">${esc(t)}</span>`).join("")
+  +(Object.keys(m.tested).length?Object.entries(m.tested).map(([k,v])=>`<span class="tag t">tested ${esc(k)}: ${esc(v)}</span>`).join(""):`<span class="tag">untested</span>`);
+ return `<tr><td><input type="checkbox" value="${esc(m.name)}" ${m.installed?"disabled checked":""} aria-label="${esc(m.name)}"></td>
+  <td><div class="nm">${m.recommended?"★ ":""}${esc(m.name)}</div><div class="sub">${esc(m.note)}</div>${tags}</td>
+  <td style="text-align:right;white-space:nowrap">${m.size.toFixed(1)} GB<div class="sub">${m.installed?"installed":""}</div></td></tr>`}).join("")+`</table>`}
+function tickRec(){S.catalog.forEach(m=>{const b=document.querySelector(`#cat input[value="${CSS.escape(m.name)}"]`);if(b&&!b.disabled)b.checked=m.recommended})}
+async function pullSel(){const names=[...document.querySelectorAll("#cat input:checked:not(:disabled)")].map(b=>b.value);
+ if(!names.length)return;await post("/api/pull",{names});refresh()}
 async function refresh(){try{render(await (await fetch("/api/status")).json())}catch(e){}}
 async function setMode(m){render(await post("/api/mode",{mode:m}))}
 async function saveModels(){const fb=$("s-fb").value;render(await post("/api/models",{model:$("s-model").value,code_model:$("s-code").value,fallback_models:fb?[fb]:[]}))}

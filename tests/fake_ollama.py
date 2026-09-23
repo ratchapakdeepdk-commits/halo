@@ -9,6 +9,7 @@ class FakeOllama:
         self.replies = list(replies or [])
         self.models = list(models)
         self.requests = []
+        self.pull_lines = []
         fake = self
 
         class H(BaseHTTPRequestHandler):
@@ -34,6 +35,15 @@ class FakeOllama:
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 fake.requests.append(body)
+                if self.path == "/api/pull":
+                    lines = fake.pull_lines or [{"status": "success"}]
+                    data = b"".join(json.dumps(l).encode() + b"\n" for l in lines)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/x-ndjson")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
                 if self.path != "/api/generate":
                     self._send({"error": "not found"}, 404)
                     return
