@@ -122,7 +122,7 @@ class TestCatalog(Env):
                                "gpt-oss:20b"])
         self.assertEqual((cfg.model, cfg.code_model, cfg.fallback_models),
                          ("qwen3:30b-a3b-instruct-2507-q4_K_M", "qwen3.6:35b-a3b-q4_K_M",
-                          ["gpt-oss:20b"]))
+                          ["qwen3:30b-a3b-instruct-2507-q4_K_M"]))
         cli.assign_roles(cfg, ["qwen3:8b"])
         self.assertEqual((cfg.model, cfg.code_model, cfg.fallback_models), ("qwen3:8b", "", []))
 

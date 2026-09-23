@@ -1,9 +1,9 @@
 """Curated local models to choose from at install time.
 
 Sizes are real download sizes from the Ollama registry (Q4 quantisation). `tested` holds
-results measured with HALO's own tests on the maintainer's machine (2x P100):
-  code   - bundled coding benchmark (bench/, generate-verify loop): passed / attempts
-  digest - known-answer log test (halo tune): correct or not
+results measured with HALO's own tests on the maintainer's machine (2x P100, Sep 2026):
+  code   - "x/14" = bundled benchmark (bench/, 7 tasks x 2); "x/3" = `halo tune` tasks
+  digest - known-answer log test from `halo tune`: correct or not
 Untested entries say so; run `halo tune` after downloading to measure on *your* machine.
 """
 from dataclasses import dataclass, field
@@ -29,23 +29,28 @@ CATALOG = [
     Model("qwen3.6:35b-a3b-q4_K_M", 22.3, "code",
           "Best coder we tested; digest also fine but slower prefill.", moe=True,
           tested={"code": "13/14", "digest": "correct"}),
-    Model("qwen3-coder:30b", 17.3, "code",
-          "Qwen's coding model, MoE; fast for its size.", moe=True),
-    Model("qwen3:30b-a3b-instruct-2507-q4_K_M", 17.3, "digest",
-          "Best log/file reader we tested: fast, accurate, good Thai.", moe=True,
+    Model("qwen3:30b-a3b-instruct-2507-q4_K_M", 17.3, "both",
+          "Best log/file reader we tested (fast, good Thai); decent coder.", moe=True,
           tested={"code": "9/14", "digest": "correct"}),
+    Model("qwen3-coder:30b", 17.3, "code",
+          "Qwen's coding MoE; in our tests weaker than qwen3:30b-a3b above.", moe=True,
+          tested={"code": "1/3", "digest": "correct"}),
     Model("gpt-oss:20b", 12.8, "both",
           "OpenAI open-weight MoE; fastest prefill on big inputs; weaker Thai.",
           thai=False, moe=True, tested={"code": "3/3 hard tasks"}),
     Model("devstral:24b", 13.3, "code",
           "Mistral's agentic-coding model; dense, so slower per token.", thai=False),
     Model("gemma3:27b", 16.2, "digest", "Google Gemma 3; strong multilingual reading, dense."),
-    Model("qwen2.5-coder:14b", 8.4, "code", "Solid coder for 12-16 GB cards."),
-    Model("qwen3:14b", 8.6, "both", "All-rounder for 12-16 GB cards."),
+    Model("qwen3:14b", 8.6, "both", "All-rounder for 12-16 GB cards; slow coder.",
+          tested={"code": "1/3", "digest": "correct"}),
+    Model("qwen2.5-coder:14b", 8.4, "code", "Coder for 12-16 GB cards; poor log reader.",
+          tested={"code": "1/3", "digest": "wrong"}),
     Model("phi4:14b", 8.4, "code", "Microsoft Phi-4; good reasoning, English-centric.",
           thai=False),
     Model("gemma3:12b", 7.6, "digest", "Good multilingual reader for 10-12 GB cards."),
-    Model("qwen3:8b", 4.9, "both", "Best small all-rounder for 8 GB cards."),
+    Model("qwen3:8b", 4.9, "digest",
+          "Best small reader for 8 GB cards; too weak for code in our tests.",
+          tested={"code": "0/3", "digest": "correct"}),
     Model("qwen2.5-coder:7b", 4.4, "code", "Small coder for 6-8 GB cards."),
     Model("gemma3:4b", 3.1, "digest", "Light reader for laptops."),
     Model("qwen3:4b-instruct", 2.3, "digest",

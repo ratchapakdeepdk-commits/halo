@@ -76,6 +76,29 @@ What we learned about the agent side:
 - **MCP servers run outside the agent's sandbox.** HALO therefore restricts MCP file access
   to the project directory itself (`allowed_roots` to extend).
 
+## 4. Model survey with `halo tune` (same machine)
+
+The known-answer log test (2,500 lines with 9 rare `connection refused` errors, three
+restarts) and three coding tasks (slugify, roman numerals, duration parser; up to 3 fix
+iterations, no fallback):
+
+| model | log answer | code | notes |
+|---|---|---|---|
+| qwen3:30b-a3b-instruct-2507 | correct (4.8 s) | 2/3 | |
+| qwen3-coder:30b | correct (19.6 s) | 1/3 | near misses (edge cases such as `bool`) |
+| qwen3:14b | correct (16.2 s) | 1/3 | 411 s for the three tasks (dense model) |
+| qwen2.5-coder:14b | wrong | 1/3 | |
+| qwen3:8b | correct (9.2 s) | 0/3 | |
+| qwen3:4b-instruct | wrong (copied the first restart time as the last) | 0/3 | |
+
+Other observations:
+- **Downloads stall.** Ollama pulls stopped at 92–95% several times.
+  `qwen3-coder:30b` needed six restarts from the shell. HALO's `pull` now detects a stall
+  (no new bytes for 2 minutes) and resumes on its own.
+- **Host RAM matters too.** With 16 GB of system RAM, loading a model while a download was
+  running got Ollama OOM-killed. HALO retries once when a connection drops, and doing tune
+  runs after downloads finish avoids the problem.
+
 ## Not yet measured
 
 - Larger samples and other task families: multi-file refactors, data conversion, docs.

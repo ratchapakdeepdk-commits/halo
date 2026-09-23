@@ -57,11 +57,13 @@ def generate(cfg: Config, prompt: str, *, system: str = "", model: str | None = 
     try:
         d = _request(cfg, "/api/generate", payload, cfg.timeout)
     except LocalModelError as e:
-        # Ollama sometimes fails a request while swapping models in/out of VRAM; one retry
-        # after a pause fixes it. Unreachable server or 4xx errors are not retried.
-        if "HTTP 5" not in str(e):
+        # Ollama sometimes fails a request while swapping models in/out of VRAM, or restarts
+        # after running out of host RAM; one retry after a pause fixes it. An unreachable
+        # server or 4xx errors are not retried.
+        msg = str(e)
+        if "HTTP 5" not in msg and "closed connection" not in msg and "reset" not in msg:
             raise
-        time.sleep(3)
+        time.sleep(5)
         d = _request(cfg, "/api/generate", payload, cfg.timeout)
     if usage is not None:
         usage.prompt_tokens += d.get("prompt_eval_count", 0)

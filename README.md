@@ -69,14 +69,30 @@ best digest model (correct, then fastest), the best code model (most tests passe
 fastest) and a fallback. To give it more to choose from, pull more candidates first, e.g.
 `ollama pull qwen3:30b-a3b-instruct-2507-q4_K_M`.
 
-`halo setup` starts from this table, based on total VRAM:
+### Choosing at install time
 
-| VRAM | digest model | code model | note |
-|---|---|---|---|
-| ≥ 24 GB | `qwen3:30b-a3b-instruct-2507-q4_K_M` | `qwen3.6:35b-a3b-q4_K_M` | tested; below 44 GB the two swap (~15 s) |
-| ≥ 13 GB | `gpt-oss:20b` | same | fastest prefill, weaker non-English |
-| ≥ 9 GB | `qwen3:14b` | same | untested |
-| ≥ 4 GB | `qwen3:4b-instruct` | same | digest only |
+`halo setup` (run by both installers) lists the models that fit **this** machine. You tick
+the ones you want, or press Enter for the ★ recommended set. HALO downloads them (and resumes
+stalled downloads), assigns the digest / code / fallback roles and can measure them straight
+away. List or add more later with `halo models` / `halo models --pull NAME`, or use the
+**Download local models** card in `halo gui`.
+
+Measured on 2× P100 with HALO's own tests (see [RESULTS.md](RESULTS.md)):
+
+| model | size | log reading | code | good for |
+|---|---|---|---|---|
+| `qwen3.6:35b-a3b-q4_K_M` | 22.3 GB | correct | **13/14** | best coder, ≥ 26 GB |
+| `qwen3:30b-a3b-instruct-2507-q4_K_M` | 17.3 GB | correct, fastest | 9/14 | best reader and all-rounder, ≥ 20 GB |
+| `qwen3-coder:30b` | 17.3 GB | correct | 1/3 | weaker than the one above in our tests |
+| `gpt-oss:20b` | 12.8 GB | – | 3/3 hard tasks | 16 GB cards; weaker Thai |
+| `qwen3:14b` | 8.6 GB | correct | 1/3 (slow) | 12 GB cards |
+| `qwen2.5-coder:14b` | 8.4 GB | wrong | 1/3 | code only |
+| `qwen3:8b` | 4.9 GB | correct | 0/3 | 8 GB cards: reading only |
+| `qwen3:4b-instruct` | 2.3 GB | wrong | 0/3 | laptops, light use |
+
+The list also offers untested options (devstral, gemma3, phi4, qwen2.5-coder:7b and others),
+labelled as untested. On cards with 8 GB or less, local models read logs well but rarely pass
+the coding tests, so expect more escalations back to the frontier model there.
 
 `halo doctor` measures real throughput instead of trusting that the GPU is used. An outdated
 driver can silently push Ollama onto a fallback backend that runs 15–20× slower.
