@@ -105,7 +105,7 @@ gets four tools:
 
 | tool | what it does |
 |---|---|
-| `halo_digest` | reads files locally and returns only the answer. Logs are compacted first, and `signals` gives exact, code-computed error counts with first/last timestamps |
+| `halo_digest` | reads files locally and returns only the answer. Logs are compacted first, and `signals` gives exact, code-computed error counts with first/last timestamps. `checks` looks up every quote and timestamp in the answer in the original file (with line number), so the agent re-checks only `not_found` |
 | `halo_code` | generate-verify loop for one file against your check command, with a model cascade. Returns status + diffstat; on failure it keeps the best attempt as `<file>.halo-draft` |
 | `halo_ask` | short self-contained question (unverified) |
 | `halo_stats` | tasks delegated and estimated frontier tokens saved |

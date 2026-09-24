@@ -26,7 +26,8 @@ call that answers the question, plus one targeted check, is the cheap path.
    call **`halo_digest` first** with file paths. For logs it already does the
    deterministic part for you: repeated lines are collapsed and `signals` lists
    error/warning lines with **exact, code-computed counts and first/last timestamps**.
-   Then verify at most one or two critical claims with a targeted grep.
+   `signals` and `checks.verified` are code-checked against the file (with line numbers):
+   do not re-grep those. Grep only a critical claim listed in `checks.not_found`.
 3. **`halo_code`** for a single, well-specified, mechanically checkable file:
    boilerplate, parsers/format converters, CLI glue, small pure functions, fixtures.
    - Write the check first (small test file or `python -c "...assert..."`); an
@@ -42,7 +43,7 @@ call that answers the question, plus one targeted check, is the cheap path.
 
 ## Trust rules
 
-- Digest output is a lead, not a fact: confirm critical values with a targeted read/grep.
+- Digest prose is a lead, not a fact; `checks.not_found` tells you which parts are unverified.
 - Numbers from the local model's own reasoning are unverified. Numbers must come from
   code that ran or from the source material.
 - If the local model escalates, that is the system working — take over.

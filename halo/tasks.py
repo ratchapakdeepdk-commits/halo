@@ -179,6 +179,87 @@ def compact_log(text: str, max_signals: int = 15) -> tuple[str, int, int, list[d
     return "\n".join(out) + "\n", len(lines), len(order), signals[:max_signals]
 
 
+CLAIM_QUOTE_RE = re.compile(r"\"([^\"\n]{6,200})\"|`([^`\n]{6,200})`|'([^'\n]{8,200})'")
+FILE_HEADER_RE = re.compile(r"^===== (.+) =====$")
+WORD_RE = re.compile(r"[a-z]{3,}")
+# Words of a digest bullet that say nothing about WHICH log line it describes.
+CLAIM_STOPWORDS = {"occurred", "times", "time", "first", "last", "the", "and", "was", "were",
+                   "with", "from", "for", "that", "this", "between", "each", "line", "lines",
+                   "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov",
+                   "dec", "info", "error", "warning"}
+
+
+def _where(f: str, num: int) -> str:
+    return f"{f}:{num}" if f else f"line {num}"
+
+
+def check_claims(answer: str, raw: str, max_items: int = 8) -> dict:
+    """Check the answer's quotes and timestamps against the ORIGINAL input, by code.
+
+    Every verification grep is one more frontier turn, and turns cost more than bytes.
+    A quote is verified if it occurs verbatim. A timestamp is verified only if it occurs on
+    a line that matches what its bullet is about: finding "14:10:38" somewhere in the log is
+    not enough (seen end-to-end: the model gave the restart the time of the next line).
+    Returns {"verified": [{claim, hits, where, line}], "not_found": [str, ...]}.
+    """
+    claims: list[tuple[str, str, set]] = []  # (claim, kind, words of its bullet)
+    seen = set()
+    for bullet in answer.splitlines():
+        words = set(WORD_RE.findall(bullet.lower())) - CLAIM_STOPWORDS
+        found = [(q, "quote") for m in CLAIM_QUOTE_RE.finditer(bullet)
+                 if len(q := next(g for g in m.groups() if g).strip().rstrip(".…").strip()) >= 6]
+        found += [(t, "time") for t in TIME_RE.findall(bullet)]
+        for c, kind in found:
+            # A quote is checked once; a timestamp once per bullet (it may be right in one
+            # bullet and borrowed in another).
+            key = c if kind == "quote" else (c, bullet)
+            if key not in seen:
+                seen.add(key)
+                claims.append((c, kind, words))
+    if not claims:
+        return {}
+    where, fname, n = [], "", 0
+    for line in raw.splitlines():
+        h = FILE_HEADER_RE.match(line)
+        if h:
+            fname, n = h.group(1), 0
+            continue
+        n += 1
+        where.append((fname, n, line))
+    verified, missing = [], []
+    line_words: dict[int, set] = {}
+
+    def overlap(i: int, words: set) -> int:
+        if i not in line_words:
+            line_words[i] = set(WORD_RE.findall(where[i][2].lower()))
+        return len(words & line_words[i])
+
+    for c, kind, words in claims[:max_items]:
+        hits = [i for i, w in enumerate(where) if c in w[2]]
+        if not hits:
+            missing.append(c)
+            continue
+        if kind == "time" and len(words) >= 2:
+            # The lines this bullet is about = those sharing (nearly) the most words with it.
+            scores = [overlap(i, words) for i in range(len(where))]
+            best = max(scores)
+            if best >= 2:
+                about = [i for i, sc in enumerate(scores) if sc >= max(2, best - 1)]
+                ok = [i for i in about if c in where[i][2]]
+                if not ok:
+                    f, num, line = where[about[-1]]
+                    missing.append(f"{c} is not on any line matching its bullet; closest "
+                                   f"match {_where(f, num)}: {line.strip()[:160]}")
+                    continue
+                hits = ok
+        # Among equals show the LAST hit: "when did X last happen" is the usual question.
+        i = max(reversed(hits), key=lambda i: overlap(i, words))
+        f, num, line = where[i]
+        verified.append({"claim": c, "hits": len(hits), "where": _where(f, num),
+                         "line": line.strip()[:160]})
+    return {"verified": verified, "not_found": missing}
+
+
 def looks_like_log(text: str, sample: int = 400) -> bool:
     lines = [l for l in text.splitlines()[:sample] if l.strip()]
     return bool(lines) and sum(1 for l in lines if TIME_RE.search(l)) >= 0.5 * len(lines)
@@ -223,6 +304,7 @@ def digest(cfg: Config, question: str, paths: list[str] | None = None, text: str
         return {"status": "error", "error": "nothing to digest (no files and no text)"}
 
     raw_chars = len(body)
+    raw = body
     compacted, signals = None, []
     if compact == "on" or (compact == "auto" and looks_like_log(body)):
         small, n_lines, n_kept, signals = compact_log(body)
@@ -288,6 +370,10 @@ def digest(cfg: Config, question: str, paths: list[str] | None = None, text: str
     if signals:
         # Code-computed, exact: the frontier can trust these counts even if the prose is off.
         out["signals"] = signals
+    if not esc:
+        checks = check_claims(answer, raw)
+        if checks:
+            out["checks"] = checks
     if debug:
         out["notes"] = notes
     if esc:

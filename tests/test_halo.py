@@ -257,6 +257,28 @@ class TestMCP(Base):
         names = {t["name"] for t in self.rpc("tools/list")["result"]["tools"]}
         self.assertEqual(names, {"halo_digest", "halo_code", "halo_ask", "halo_stats"})
 
+    def test_check_claims(self):
+        raw = ("===== a.log =====\nSep 23 10:00:01 svc[1]: started\n"
+               "Sep 23 10:05:00 svc[1]: KeyError: 'llamacpp'\nSep 23 11:00:02 svc[1]: started\n")
+        c = tasks.check_claims('- last restart 11:00:02 ("svc[1]: started")\n'
+                               '- "KeyError: \'llamacpp\'" at 10:05:00\n- crash at 12:34:56', raw)
+        got = {v["claim"]: v for v in c["verified"]}
+        self.assertEqual(got["svc[1]: started"]["where"], "a.log:3")  # last hit, not first
+        self.assertEqual(got["svc[1]: started"]["hits"], 2)
+        self.assertEqual(got["10:05:00"]["where"], "a.log:2")
+        self.assertEqual(c["not_found"], ["12:34:56"])
+        self.assertEqual(tasks.check_claims("no claims here", raw), {})
+
+    def test_check_claims_borrowed_timestamp(self):
+        # Seen end-to-end: the restart was given the timestamp of the NEXT line.
+        raw = ("Sep 17 14:10:30 host systemd[1]: Started abi-brain-api.service - Abi Brain API\n"
+               "Sep 17 14:10:38 host python3[9]: INFO: Uvicorn running on http://x:8801\n")
+        c = tasks.check_claims("- systemd[1]: Started abi-brain-api.service - Abi Brain API "
+                               "last at Sep 17 14:10:38", raw)
+        self.assertEqual(c["verified"], [])
+        self.assertIn("line 1", c["not_found"][0])
+        self.assertIn("14:10:30", c["not_found"][0])
+
     def test_call_digest(self):
         self.fake.replies = ["answer"]
         p = self.write("x.txt", "hello")

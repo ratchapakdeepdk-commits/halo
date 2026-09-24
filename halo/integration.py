@@ -26,7 +26,8 @@ RULE = f"""{BEGIN}
 This machine has a free local model behind the `halo` MCP tools. Work hybrid in every session:
 
 - Before reading or grepping through a large log, file, or command output (over ~200 lines),
-  call `halo_digest` with the path. Then verify one or two key claims with a targeted grep.
+  call `halo_digest` with the path. Its `checks.verified` claims are already confirmed in
+  the file; grep only a key claim listed in `checks.not_found`.
 - Before writing a new self-contained file that a test or command can check, delegate it with
   `halo_code`. Keep the spec short and pass the test file as `context_files`. If the result
   is `failed`, fix the `.halo-draft`. If it is `escalated`, do the work yourself.

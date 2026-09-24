@@ -99,6 +99,41 @@ Other observations:
   running got Ollama OOM-killed. HALO retries once when a connection drops, and doing tune
   runs after downloads finish avoids the problem.
 
+## 5. Code-checked digest claims (`checks`), 24 Sep 2026
+
+The HALO arm used to spend 1–3 extra turns grepping to verify the digest. `halo_digest` now
+returns `checks`: every quote and timestamp in the answer is looked up in the ORIGINAL file
+by code. A timestamp only counts as verified when it sits on a line that matches what its
+bullet is about. The result includes the line number and the line itself, so the agent can
+see the evidence without a grep. The tool description says to re-check only `not_found`.
+
+This caught a real error that plain substring checks missed. The model gave the service
+restart the timestamp of the *next* line (14:10:38, Uvicorn ready) instead of systemd's
+`Started` line (14:10:30). `checks.not_found` now names 14:10:30 and the correct line.
+
+Same 465 KB journald log, same question, Sonnet, three A/B pairs:
+
+| run | arm | tool calls | turns | output tok | input tok (read+write) | cost |
+|---|---|---|---|---|---|---|
+| 1 | HALO | ToolSearch, digest | 3 | 488 | 57.7k | $0.058 |
+| | baseline | ToolSearch, 2× Bash | 4 | 966 | 55.3k | $0.079 |
+| 2 | HALO | ToolSearch, digest | 3 | 570 | 57.4k | $0.057 |
+| | baseline | ToolSearch, 2× Bash, 4× Grep | 8 | 1,930 | 95.7k | $0.080 |
+| 3 | HALO | ToolSearch, digest, Bash | 4 | 814 | 78.6k | $0.067 |
+| | baseline | ToolSearch, 3× Bash | 5 | 1,265 | 67.7k | $0.048* |
+
+\* Its cache write was 5.6k instead of the usual 11–15k (the prompt cache was still warm
+from run 2), so this cost is not comparable with the others.
+
+- Before `checks`, the HALO arm took 3–4 tool calls and cost $0.076–0.091 (section 3). With
+  it, 2 of 3 runs used no verification call at all ($0.057–0.058).
+- In run 3, Sonnet re-grepped the three counts anyway, even though `signals` already had
+  them exactly. The tool description can reduce this, but it cannot force it.
+- Output tokens were 36–70% lower in every pair. **Total cost is dominated by the fixed
+  context (~55k tokens per session)**, so on a log that a few greps can answer, the cost
+  gap stays modest. Prompt-cache state alone can move a run's cost by ±30%. Future A/B
+  runs should randomise arm order and report input tokens next to cost.
+
 ## Not yet measured
 
 - Larger samples and other task families: multi-file refactors, data conversion, docs.

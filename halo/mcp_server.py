@@ -19,8 +19,10 @@ TOOLS = [
             "Read large files or text with a FREE local model and get back only the part that "
             "answers your question. Use this INSTEAD of reading big logs, data dumps, long "
             "docs or long command output into your own context (anything over ~200 lines). "
-            "Pass file paths, not contents. The answer is extracted by a small model: treat "
-            "it as a lead, and verify critical details with a targeted grep/read. "
+            "Pass file paths, not contents. The answer is extracted by a small model, but "
+            "`signals` (exact counts) and `checks.verified` (its quotes/timestamps found "
+            "verbatim in the file, with line number and the line itself) are computed by code: "
+            "trust those without re-grepping, and verify only claims in `checks.not_found`. "
             "status='escalated' means the local model could not do it."),
         "inputSchema": {
             "type": "object",
