@@ -1,5 +1,15 @@
-"""Minimal Ollama client (stdlib only). Tracks token usage for the ledger."""
+"""Minimal Ollama client (stdlib only). Tracks token usage for the ledger.
+
+A model named `codex` or `codex:<model>` is not an Ollama model: it runs `codex exec` (OpenAI
+Codex CLI, signed in with the user's ChatGPT plan) as a text-only worker. It is meant as a
+paid tier *after* the free local models in `fallback_models`, before escalating to the
+frontier agent; its tokens are counted separately (cloud_*), never as local.
+"""
 import json
+import os
+import shutil
+import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -16,6 +26,9 @@ class Usage:
         self.prompt_tokens = 0
         self.output_tokens = 0
         self.calls = 0
+        self.cloud_in = 0
+        self.cloud_out = 0
+        self.cloud_calls = 0
 
     @property
     def total(self) -> int:
@@ -36,9 +49,63 @@ def _request(cfg: Config, path: str, payload: dict | None, timeout: int):
         raise LocalModelError(f"cannot reach Ollama at {cfg.ollama_url}: {e}") from None
 
 
+def is_cloud(model: str | None) -> bool:
+    return bool(model) and (model == "codex" or model.startswith("codex:"))
+
+
+CODEX_RULES = (
+    "You are used as a plain text generator inside another tool. Do NOT run shell commands, "
+    "read files or edit files: everything you need is in this message, and the tool that "
+    "called you applies your answer itself. Reply with the answer only.\n\n"
+)
+
+
+def _codex(cfg: Config, prompt: str, system: str, model: str, usage: Usage | None) -> str:
+    exe = shutil.which(getattr(cfg, "codex_bin", "") or "codex")
+    if not exe:
+        raise LocalModelError("codex CLI not found (install it and run `codex login`)")
+    sub = model.split(":", 1)[1] if ":" in model else ""
+    # An empty scratch dir as the workspace and a read-only sandbox: the worker only returns
+    # text, HALO writes and checks files itself exactly as it does for local models.
+    with tempfile.TemporaryDirectory(prefix="halo-codex-") as work:
+        cmd = [exe, "exec", "--json", "--ephemeral", "--skip-git-repo-check",
+               "--ignore-user-config", "-s", "read-only", "-C", work]
+        if sub:
+            cmd += ["-m", sub]
+        cmd.append("-")
+        text = CODEX_RULES + (f"{system}\n\n" if system else "") + prompt
+        try:
+            p = subprocess.run(cmd, input=text, capture_output=True, text=True,
+                               timeout=cfg.timeout, cwd=work)
+        except subprocess.TimeoutExpired:
+            raise LocalModelError(f"codex timed out after {cfg.timeout}s") from None
+    answer, err = "", ""
+    for line in p.stdout.splitlines():
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        item = ev.get("item") or {}
+        if ev.get("type") == "item.completed" and item.get("type") == "agent_message":
+            answer = item.get("text", "")
+        elif ev.get("type") == "turn.completed" and usage is not None:
+            u = ev.get("usage") or {}
+            usage.cloud_in += u.get("input_tokens", 0)
+            usage.cloud_out += u.get("output_tokens", 0) + u.get("reasoning_output_tokens", 0)
+            usage.cloud_calls += 1
+        elif ev.get("type") in ("error", "turn.failed"):
+            err = json.dumps(ev.get("error") or ev.get("message") or ev)[:300]
+    if p.returncode != 0 or (err and not answer):
+        raise LocalModelError(f"codex failed (exit {p.returncode}): "
+                              f"{err or p.stderr.strip()[-300:]}")
+    return answer.strip()
+
+
 def generate(cfg: Config, prompt: str, *, system: str = "", model: str | None = None,
              usage: Usage | None = None, num_ctx: int | None = None,
              temperature: float | None = None, max_tokens: int | None = None) -> str:
+    if is_cloud(model or cfg.model):
+        return _codex(cfg, prompt, system, model or cfg.model, usage)
     payload = {
         "model": model or cfg.model,
         "prompt": prompt,

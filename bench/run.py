@@ -8,6 +8,7 @@ and must make `python -m unittest test_task` pass.
     python bench/run.py                     # all tasks, configured model
     python bench/run.py -m gpt-oss:20b -k roman semver
     python bench/run.py --repeat 3          # pass-rate over several samples
+    python bench/run.py --chain qwen3:30b-a3b-instruct-2507-q4_K_M codex   # local, then paid tier
 
 Writes bench/results/<timestamp>-<model>.json and prints a markdown table.
 """
@@ -42,6 +43,7 @@ def run_task(cfg, name: str, model: str | None, iters: int, fallback) -> dict:
     return {"task": name, "status": res["status"], "attempts": res.get("attempts", 0),
             "seconds": res.get("seconds", 0), "model": res.get("model"),
             "local_tokens": rec.get("local_in", 0) + rec.get("local_out", 0),
+            "cloud_tokens": rec.get("cloud_in", 0) + rec.get("cloud_out", 0),
             "frontier_direct_est": rec.get("frontier_direct_est", 0),
             "frontier_returned_est": rec.get("frontier_returned_est", 0),
             "reason": res.get("reason", "")}
@@ -55,13 +57,17 @@ def main():
     p.add_argument("--repeat", type=int, default=1)
     p.add_argument("--cascade", action="store_true",
                    help="use the configured code_model + fallback_models chain")
+    p.add_argument("--chain", nargs="+", help="explicit model chain, e.g. <local model> codex")
     a = p.parse_args()
 
     cfg = config.load()
     # Keep benchmark runs out of the user's real savings ledger.
     os.makedirs(os.path.join(HERE, "results"), exist_ok=True)
     ledger.LEDGER = os.path.join(HERE, "results", "ledger.jsonl")
-    if a.cascade:
+    if a.chain:
+        model, fallback = a.chain[0], a.chain[1:]
+        label = " → ".join(a.chain)
+    elif a.cascade:
         model, fallback = None, None
         label = " → ".join([cfg.code_model or cfg.model] + cfg.fallback_models)
     else:
@@ -75,7 +81,8 @@ def main():
             r["rep"] = rep
             rows.append(r)
             print(f"  {name:<10} {r['status']:<9} {str(r['model']):<28} attempts={r['attempts']} "
-                  f"{r['seconds']:>6.1f}s  local={r['local_tokens']}", file=sys.stderr)
+                  f"{r['seconds']:>6.1f}s  local={r['local_tokens']} cloud={r['cloud_tokens']}",
+                  file=sys.stderr)
 
     ok = [r for r in rows if r["status"] == "passed"]
     direct = sum(r["frontier_direct_est"] for r in rows)
@@ -88,6 +95,7 @@ def main():
                "frontier_tokens_direct_est": direct, "frontier_tokens_hybrid_est": hybrid,
                "frontier_reduction_est": 1 - hybrid / direct if direct else 0,
                "local_tokens": sum(r["local_tokens"] for r in rows),
+               "cloud_tokens": sum(r["cloud_tokens"] for r in rows),
                "seconds": sum(r["seconds"] for r in rows)}
 
     os.makedirs(os.path.join(HERE, "results"), exist_ok=True)
@@ -105,6 +113,7 @@ def main():
     print(f"\n**{label}**: {summary['passed']}/{summary['tasks']} passed, "
           f"est. frontier-token reduction {summary['frontier_reduction_est']:.0%} "
           f"({direct} → {hybrid}), {summary['local_tokens']} local tokens, "
+          f"{summary['cloud_tokens']} codex tokens, "
           f"{summary['seconds']:.0f}s total. Results: {os.path.relpath(out, os.path.dirname(HERE))}")
 
 

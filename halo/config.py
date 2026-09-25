@@ -33,6 +33,8 @@ class Config:
     # Extra directories the MCP server may read/write besides the one the agent was started
     # in. MCP servers run outside the agent's own sandbox, so HALO enforces this itself.
     allowed_roots: list = field(default_factory=list)
+    # Path of the OpenAI Codex CLI used by the paid "codex" / "codex:<model>" worker tier.
+    codex_bin: str = "codex"
 
 
 _ENV = {

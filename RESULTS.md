@@ -139,3 +139,27 @@ from run 2), so this cost is not comparable with the others.
 - Larger samples and other task families: multi-file refactors, data conversion, docs.
 - Frontier models other than Sonnet, and agents other than Claude Code.
 - Smaller GPUs (8–16 GB) and the untested models in the recommendation table.
+
+## Paid second-vendor tier: Codex after the local model (25 Sep 2026)
+
+`bench/run.py -m codex` and `--chain qwen3:30b-a3b-instruct-2507-q4_K_M codex`, 7 tasks × 1,
+Codex CLI 0.153 signed in with a ChatGPT plan (default model), text-only worker as described
+in the README. Token counts are from Codex's own `turn.completed` usage events.
+
+| chain | passed | solved by local | solved by codex | local tok | codex tok | est. frontier-token reduction* |
+|---|---|---|---|---|---|---|
+| codex alone | 7/7 (all first try) | – | 7 | 0 | 95,267 | 56% |
+| qwen3:30b-a3b → codex | 7/7 | 3 (lru, roman, slugify) | 4 (bragg took 2 calls) | 30,060 | 71,099 | 62% |
+
+- Codex fixed every task qwen3:30b-a3b could not, on its first call in 4 of 5 calls.
+- **Each Codex call costs ~13k input tokens even for a tiny task** (its own agent prompt; ~80%
+  was reported as cached). So the paid tier only makes sense *after* free local attempts, never
+  first: local-first saved 25% of Codex tokens here while giving the same pass rate.
+- The frontier (Claude) side is unchanged — it sees the same short result either way — so the
+  frontier estimate is about the same as the local-only runs; the gain is the pass rate
+  (qwen3:30b-a3b alone: 9/14) without spending frontier tokens on the failures.
+- These are ChatGPT-plan quota tokens, not free: report them next to frontier savings.
+- Bug found while measuring: `ledger.read()` bound its default path at import, so `bench/run.py`
+  read token counts from the user's ledger instead of the bench ledger. Fixed; the numbers
+  above were recomputed from `bench/results/ledger.jsonl`. The 23 Sep runs in §1 show
+  per-task counts consistent with their own tasks.

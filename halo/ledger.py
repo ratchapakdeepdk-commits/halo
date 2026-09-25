@@ -41,6 +41,10 @@ def record(kind: str, status: str, model: str, usage, *, frontier: dict, seconds
         "frontier_returned_est": int(via),
         "seconds": round(seconds, 2),
     }
+    if getattr(usage, "cloud_calls", 0):
+        # a paid worker (codex): not free, so kept apart from local and reported as such
+        rec.update(cloud_in=usage.cloud_in, cloud_out=usage.cloud_out,
+                   cloud_calls=usage.cloud_calls)
     if extra:
         rec.update(extra)
     try:
@@ -52,7 +56,9 @@ def record(kind: str, status: str, model: str, usage, *, frontier: dict, seconds
     return rec
 
 
-def read(path: str = LEDGER) -> list[dict]:
+def read(path: str | None = None) -> list[dict]:
+    # Resolved at call time: bench/tests repoint LEDGER after import.
+    path = path or LEDGER
     out = []
     try:
         with open(path, encoding="utf-8") as fh:
@@ -74,7 +80,8 @@ def summary(records: list[dict], since: int = 0) -> dict:
         k = by_kind[r["kind"]]
         k["tasks"] += 1
         k[r["status"]] += 1
-        for f in ("local_in", "local_out", "frontier_direct_est", "frontier_returned_est"):
+        for f in ("local_in", "local_out", "cloud_in", "cloud_out",
+                  "frontier_direct_est", "frontier_returned_est"):
             k[f] += r.get(f, 0)
             tot[f] += r.get(f, 0)
         tot["tasks"] += 1
@@ -94,6 +101,8 @@ def format_summary(s: dict) -> str:
     lines = [f"Delegated tasks: {t['tasks']}  (ok/passed: {t.get('ok', 0) + t.get('passed', 0)}, "
              f"escalated: {t.get('escalated', 0)}, failed: {t.get('failed', 0)})",
              f"Local tokens used:            {t.get('local_in', 0) + t.get('local_out', 0):>10,}",
+             *([f"Paid worker (codex) tokens: {t['cloud_in'] + t.get('cloud_out', 0):>10,}  "
+                f"(ChatGPT plan quota, not free)"] if t.get("cloud_in") else []),
              f"Frontier tokens saved, upper bound: {s['frontier_saved_est']:>10,}  (input-equivalent)",
              ""]
     for kind, k in sorted(s["by_kind"].items()):

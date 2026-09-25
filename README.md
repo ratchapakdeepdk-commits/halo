@@ -141,6 +141,23 @@ model for inputs over `bulk_chars`), `HALO_CTX` (default 8192), `HALO_MAX_ITERS`
 `allowed_roots` (config file only) lists extra directories the MCP server may touch.
 Thinking mode is always disabled, because it makes interactive delegation far too slow.
 
+### Optional paid tier: a second frontier vendor (Codex)
+
+If the [Codex CLI](https://github.com/openai/codex) is installed and signed in (`codex login`,
+ChatGPT plan), the model name `codex` (or `codex:<model>`) runs `codex exec` as a worker. Put
+it *last* in the chain so free local models are always tried first:
+
+```json
+"code_model": "qwen3.6:35b-a3b-q4_K_M",
+"fallback_models": ["gpt-oss:20b", "codex"]
+```
+
+Codex is used as a text-only worker (read-only sandbox, empty scratch workspace); HALO still
+writes the file and runs your check itself, so the trust model is unchanged. Its tokens are
+recorded as `cloud_*` in the ledger and shown separately by `halo stats` — they cost plan
+quota, not money per call, but they are **not free**, and your code and spec are sent to
+OpenAI.
+
 ## How savings are counted (`halo stats`)
 
 Every task is appended to `~/.local/share/halo/ledger.jsonl`:
