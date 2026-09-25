@@ -66,12 +66,15 @@ if ($userPath -notlike "*$scripts*") {
     Say "Added $scripts to your PATH (new terminals will see the 'halo' command)."
 }
 
-# 4. Pick + pull models for this GPU, connect Claude Code if it is installed
+# 4. Pick + pull models for this GPU, then choose which agents (Claude Code / Codex / Gemini)
+#    use HALO from the ones installed
 if (-not $CiSmoke) {
-    # Interactive: shows the models that fit this PC and lets you pick (Enter = recommended).
+    # Interactive: shows the models that fit this PC and the agents found, lets you pick
+    # (Enter = recommended models / all agents).
     $setupArgs = @("-m", "halo", "setup")
-    if (Have claude) { $setupArgs += "--claude" }
-    else { Write-Host "   (Claude Code not found: HALO works from the terminal; run 'halo setup --claude' after installing Claude Code.)" }
+    if (-not ((Have claude) -or (Have codex) -or (Have gemini))) {
+        Write-Host "   (No Claude Code / Codex / Gemini CLI found: HALO works from the terminal; run 'halo agents add <name>' after installing one.)"
+    }
     & $py @setupArgs
     if ($LASTEXITCODE -ne 0) { throw "halo setup failed" }
 }

@@ -42,7 +42,7 @@ def record(kind: str, status: str, model: str, usage, *, frontier: dict, seconds
         "seconds": round(seconds, 2),
     }
     if getattr(usage, "cloud_calls", 0):
-        # a paid worker (codex): not free, so kept apart from local and reported as such
+        # a paid worker (codex/claude/gemini CLI): not free, so kept apart from local and reported as such
         rec.update(cloud_in=usage.cloud_in, cloud_out=usage.cloud_out,
                    cloud_calls=usage.cloud_calls)
     if extra:
@@ -101,8 +101,8 @@ def format_summary(s: dict) -> str:
     lines = [f"Delegated tasks: {t['tasks']}  (ok/passed: {t.get('ok', 0) + t.get('passed', 0)}, "
              f"escalated: {t.get('escalated', 0)}, failed: {t.get('failed', 0)})",
              f"Local tokens used:            {t.get('local_in', 0) + t.get('local_out', 0):>10,}",
-             *([f"Paid worker (codex) tokens: {t['cloud_in'] + t.get('cloud_out', 0):>10,}  "
-                f"(ChatGPT plan quota, not free)"] if t.get("cloud_in") else []),
+             *([f"Paid worker tokens (CLI plans): {t['cloud_in'] + t.get('cloud_out', 0):>10,}  "
+                f"(plan quota, not free)"] if t.get("cloud_in") else []),
              f"Frontier tokens saved, upper bound: {s['frontier_saved_est']:>10,}  (input-equivalent)",
              ""]
     for kind, k in sorted(s["by_kind"].items()):

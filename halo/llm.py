@@ -1,9 +1,16 @@
-"""Minimal Ollama client (stdlib only). Tracks token usage for the ledger.
+"""Model backends (stdlib only). Tracks token usage for the ledger.
 
-A model named `codex` or `codex:<model>` is not an Ollama model: it runs `codex exec` (OpenAI
-Codex CLI, signed in with the user's ChatGPT plan) as a text-only worker. It is meant as a
-paid tier *after* the free local models in `fallback_models`, before escalating to the
-frontier agent; its tokens are counted separately (cloud_*), never as local.
+The default backend is Ollama (free, local). A model named `<cli>` or `<cli>:<model>` for a
+cli in CLI_WORKERS runs that vendor's own command-line agent, signed in with the user's plan,
+as a *text-only* worker instead:
+
+  codex[:model]   OpenAI Codex CLI   (`codex exec`)
+  claude[:model]  Claude Code        (`claude -p`)
+  gemini[:model]  Gemini CLI         (`gemini -p`)
+
+They are paid tiers meant to go *after* the free local models in `fallback_models`. Each
+runs in an empty scratch directory with tools/MCP off, and its tokens are counted
+separately (cloud_*), never as local.
 """
 import json
 import os
@@ -49,38 +56,29 @@ def _request(cfg: Config, path: str, payload: dict | None, timeout: int):
         raise LocalModelError(f"cannot reach Ollama at {cfg.ollama_url}: {e}") from None
 
 
+CLI_WORKERS = ("codex", "claude", "gemini")
+
+
 def is_cloud(model: str | None) -> bool:
-    return bool(model) and (model == "codex" or model.startswith("codex:"))
+    return bool(model) and model.split(":", 1)[0] in CLI_WORKERS
 
 
-CODEX_RULES = (
+WORKER_RULES = (
     "You are used as a plain text generator inside another tool. Do NOT run shell commands, "
     "read files or edit files: everything you need is in this message, and the tool that "
     "called you applies your answer itself. Reply with the answer only.\n\n"
 )
 
 
-def _codex(cfg: Config, prompt: str, system: str, model: str, usage: Usage | None) -> str:
-    exe = shutil.which(getattr(cfg, "codex_bin", "") or "codex")
-    if not exe:
-        raise LocalModelError("codex CLI not found (install it and run `codex login`)")
-    sub = model.split(":", 1)[1] if ":" in model else ""
-    # An empty scratch dir as the workspace and a read-only sandbox: the worker only returns
-    # text, HALO writes and checks files itself exactly as it does for local models.
-    with tempfile.TemporaryDirectory(prefix="halo-codex-") as work:
-        cmd = [exe, "exec", "--json", "--ephemeral", "--skip-git-repo-check",
-               "--ignore-user-config", "-s", "read-only", "-C", work]
-        if sub:
-            cmd += ["-m", sub]
-        cmd.append("-")
-        text = CODEX_RULES + (f"{system}\n\n" if system else "") + prompt
-        try:
-            p = subprocess.run(cmd, input=text, capture_output=True, text=True,
-                               timeout=cfg.timeout, cwd=work)
-        except subprocess.TimeoutExpired:
-            raise LocalModelError(f"codex timed out after {cfg.timeout}s") from None
-    answer, err = "", ""
-    for line in p.stdout.splitlines():
+def _cmd_codex(exe: str, sub: str, work: str) -> list:
+    cmd = [exe, "exec", "--json", "--ephemeral", "--skip-git-repo-check",
+           "--ignore-user-config", "-s", "read-only", "-C", work]
+    return cmd + (["-m", sub] if sub else []) + ["-"]
+
+
+def _parse_codex(out: str) -> tuple[str, int, int, str]:
+    answer, tin, tout, err = "", 0, 0, ""
+    for line in out.splitlines():
         try:
             ev = json.loads(line)
         except ValueError:
@@ -88,16 +86,82 @@ def _codex(cfg: Config, prompt: str, system: str, model: str, usage: Usage | Non
         item = ev.get("item") or {}
         if ev.get("type") == "item.completed" and item.get("type") == "agent_message":
             answer = item.get("text", "")
-        elif ev.get("type") == "turn.completed" and usage is not None:
+        elif ev.get("type") == "turn.completed":
             u = ev.get("usage") or {}
-            usage.cloud_in += u.get("input_tokens", 0)
-            usage.cloud_out += u.get("output_tokens", 0) + u.get("reasoning_output_tokens", 0)
-            usage.cloud_calls += 1
+            tin += u.get("input_tokens", 0)
+            tout += u.get("output_tokens", 0) + u.get("reasoning_output_tokens", 0)
         elif ev.get("type") in ("error", "turn.failed"):
             err = json.dumps(ev.get("error") or ev.get("message") or ev)[:300]
-    if p.returncode != 0 or (err and not answer):
-        raise LocalModelError(f"codex failed (exit {p.returncode}): "
-                              f"{err or p.stderr.strip()[-300:]}")
+    return answer, tin, tout, err
+
+
+def _cmd_claude(exe: str, sub: str, work: str) -> list:
+    # No tools, no MCP servers, nothing saved: a plain completion on the user's plan.
+    cmd = [exe, "-p", "--output-format", "json", "--strict-mcp-config", "--tools", "",
+           "--no-session-persistence"]
+    return cmd + (["--model", sub] if sub else [])
+
+
+def _parse_claude(out: str) -> tuple[str, int, int, str]:
+    d = json.loads(out)
+    u = d.get("usage") or {}
+    tin = (u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0)
+           + u.get("cache_creation_input_tokens", 0))
+    err = str(d.get("result", ""))[:300] if d.get("is_error") else ""
+    return ("" if err else d.get("result", "")), tin, u.get("output_tokens", 0), err
+
+
+def _cmd_gemini(exe: str, sub: str, work: str) -> list:
+    # plan = read-only approval mode; allowing only a server that does not exist loads no MCP.
+    # The prompt comes on stdin; -p "" switches to headless mode and appends nothing.
+    cmd = [exe, "-o", "json", "--approval-mode", "plan",
+           "--allowed-mcp-server-names", "halo-worker-none", "-p", ""]
+    return cmd + (["-m", sub] if sub else [])
+
+
+def _parse_gemini(out: str) -> tuple[str, int, int, str]:
+    d = json.loads(out[out.index("{"):])
+    tin = tout = 0
+    for m in ((d.get("stats") or {}).get("models") or {}).values():
+        t = m.get("tokens") or {}
+        tin += t.get("prompt", 0)
+        tout += t.get("candidates", 0) + t.get("thoughts", 0)
+    err = json.dumps(d["error"])[:300] if d.get("error") else ""
+    return d.get("response") or "", tin, tout, err
+
+
+_CLI = {"codex": (_cmd_codex, _parse_codex), "claude": (_cmd_claude, _parse_claude),
+        "gemini": (_cmd_gemini, _parse_gemini)}
+
+
+def _cli_worker(cfg: Config, prompt: str, system: str, model: str, usage: Usage | None) -> str:
+    name, _, sub = model.partition(":")
+    exe = shutil.which(getattr(cfg, f"{name}_bin", "") or name)
+    if not exe:
+        raise LocalModelError(f"{name} CLI not found (install it and sign in first)")
+    build, parse = _CLI[name]
+    text = WORKER_RULES + (f"{system}\n\n" if system else "") + prompt
+    # HALO_WORKER=1: the MCP server offers no tools inside a worker, so no delegation loops.
+    env = dict(os.environ, HALO_WORKER="1")
+    # An empty scratch dir as the workspace: the worker only returns text, HALO writes and
+    # checks files itself exactly as it does for local models.
+    with tempfile.TemporaryDirectory(prefix=f"halo-{name}-") as work:
+        try:
+            p = subprocess.run(build(exe, sub, work), input=text, capture_output=True,
+                               text=True, timeout=cfg.timeout, cwd=work, env=env)
+        except subprocess.TimeoutExpired:
+            raise LocalModelError(f"{name} timed out after {cfg.timeout}s") from None
+    try:
+        answer, tin, tout, err = parse(p.stdout)
+    except (ValueError, KeyError, AttributeError, TypeError):
+        answer, tin, tout, err = "", 0, 0, "unreadable output"
+    if usage is not None and (tin or tout):
+        usage.cloud_in += tin
+        usage.cloud_out += tout
+        usage.cloud_calls += 1
+    if p.returncode != 0 or err or not answer:
+        raise LocalModelError(f"{name} failed (exit {p.returncode}): "
+                              f"{err or p.stderr.strip()[-300:] or 'empty answer'}")
     return answer.strip()
 
 
@@ -105,7 +169,7 @@ def generate(cfg: Config, prompt: str, *, system: str = "", model: str | None = 
              usage: Usage | None = None, num_ctx: int | None = None,
              temperature: float | None = None, max_tokens: int | None = None) -> str:
     if is_cloud(model or cfg.model):
-        return _codex(cfg, prompt, system, model or cfg.model, usage)
+        return _cli_worker(cfg, prompt, system, model or cfg.model, usage)
     payload = {
         "model": model or cfg.model,
         "prompt": prompt,

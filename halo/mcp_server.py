@@ -117,6 +117,8 @@ def _denied(bad: list[str], roots: list[str]) -> dict:
 
 def call_tool(name: str, args: dict) -> dict:
     cfg = config.load()
+    if os.environ.get("HALO_WORKER") and name != "halo_stats":
+        return {"status": "off", "error": "HALO tools are disabled inside a HALO worker."}
     if cfg.mode != "hybrid" and name != "halo_stats":
         return {"status": "off", "error": "HALO is switched to frontier-only mode by the user. "
                                           "Do this step yourself."}
@@ -167,7 +169,9 @@ def handle(msg: dict) -> dict | None:
         return ok({})
     if method == "tools/list":
         # Frontier-only mode: offer nothing, so new sessions do not even see the tools.
-        return ok({"tools": TOOLS if config.load().mode == "hybrid" else []})
+        # Inside a HALO worker (a vendor CLI HALO itself started) offer nothing: no loops.
+        on = config.load().mode == "hybrid" and not os.environ.get("HALO_WORKER")
+        return ok({"tools": TOOLS if on else []})
     if method == "tools/call":
         p = msg.get("params") or {}
         try:

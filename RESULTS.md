@@ -151,6 +151,10 @@ in the README. Token counts are from Codex's own `turn.completed` usage events.
 | codex alone | 7/7 (all first try) | – | 7 | 0 | 95,267 | 56% |
 | qwen3:30b-a3b → codex | 7/7 | 3 (lru, roman, slugify) | 4 (bragg took 2 calls) | 30,060 | 71,099 | 62% |
 
+- Same idea with Claude as the paid tier (`--chain qwen3:30b-a3b… claude:haiku`, the 4 tasks
+  above that qwen3:30b-a3b had failed): 4/4 passed — local solved duration and semver this
+  time (sampling varies run to run), `claude -p --model haiku` fixed bragg (2 calls) and
+  nginxlog (1 call); 47,776 paid-worker tokens, 20,737 local tokens.
 - Codex fixed every task qwen3:30b-a3b could not, on its first call in 4 of 5 calls.
 - **Each Codex call costs ~13k input tokens even for a tiny task** (its own agent prompt; ~80%
   was reported as cached). So the paid tier only makes sense *after* free local attempts, never

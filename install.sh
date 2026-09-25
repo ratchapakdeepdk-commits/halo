@@ -25,10 +25,11 @@ else
 fi
 
 export PATH="$HOME/.local/bin:$PATH"
-# Interactive when run from a terminal (pick models from a list); `curl | bash` uses the
-# recommended models automatically.
-if command -v claude >/dev/null; then halo setup --claude "$@" </dev/tty 2>/dev/null || halo setup --yes --claude "$@"
-else halo setup "$@" </dev/tty 2>/dev/null || halo setup --yes "$@"; fi
+# Interactive when run from a terminal (pick models and which agents use HALO from a list);
+# `curl | bash` uses the recommended models and connects every agent CLI it finds.
+AGENTS=""
+for a in claude codex gemini; do command -v "$a" >/dev/null && AGENTS="$AGENTS --agent $a"; done
+halo setup "$@" </dev/tty 2>/dev/null || halo setup --yes $AGENTS "$@"
 halo doctor || true
 echo
 echo "Done. Open the control panel with:  halo gui"

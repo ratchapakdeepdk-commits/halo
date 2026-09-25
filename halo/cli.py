@@ -253,22 +253,77 @@ def cmd_setup(a, cfg):
             from . import tune
             config.save(cfg)
             tune.run(cfg, models=chosen)
+    bad = [w for w in (a.worker or []) if not llm.is_cloud(w)]
+    if bad:
+        print(f"--worker must be one of {', '.join(llm.CLI_WORKERS)} (optionally :model): {bad}")
+        return 2
+    workers = [w for w in (a.worker or []) if w not in cfg.fallback_models]
+    if workers:
+        cfg.fallback_models = [*cfg.fallback_models, *workers]
+        print(f"✓ paid worker tier after the local models: {', '.join(workers)}")
     print(f"✓ config written to {config.save(cfg)}")
-    if a.claude:
-        integration.install_claude(cfg.mode)
+    agents = list(dict.fromkeys((a.agent or []) + (["claude"] if a.claude else [])))
+    if not agents and not a.yes and sys.stdin is not None and sys.stdin.isatty():
+        agents = choose_agents()
+    if agents:
+        integration.install(agents, cfg.mode)
     print("\nNext: `halo doctor` to benchmark, `halo stats` to see savings.")
+    return 0
+
+
+def choose_agents() -> list[str]:
+    """Ask which installed agents should use HALO (default: all of them)."""
+    found = integration.detect()
+    if not found:
+        print("No supported agent CLI found (Claude Code, Codex CLI, Gemini CLI). "
+              "Install one, then run `halo agents add <name>`.")
+        return []
+    print("Agents found on this machine — which should use HALO?")
+    for i, n in enumerate(found, 1):
+        print(f"  {i}. {integration.AGENTS[n].title} ({n})")
+    ans = input(f"numbers separated by spaces [all: {' '.join(map(str, range(1, len(found) + 1)))}, "
+                f"0 = none]: ").strip()
+    if ans == "0":
+        return []
+    if not ans:
+        return found
+    return [found[int(x) - 1] for x in ans.split() if x.isdigit() and 0 < int(x) <= len(found)]
+
+
+def cmd_agents(a, cfg):
+    bad = [n for n in a.names if n not in integration.AGENTS]
+    if bad or (a.action and not a.names):
+        print(f"choose agents from: {', '.join(integration.AGENTS)}", file=sys.stderr)
+        return 2
+    if a.action == "add":
+        return integration.install(a.names, cfg.mode)
+    if a.action == "remove":
+        for n in a.names:
+            integration.uninstall(n)
+            print(f"  ✓ HALO removed from {integration.AGENTS[n].title}")
+        return 0
+    st = integration.status()
+    print(f"mode: {st['mode']}")
+    for n, s in st["agents"].items():
+        print(f"  {n:<7} {s['title']:<12} installed: {'yes' if s['cli'] else 'no ':<4} "
+              f"uses HALO: {'yes' if s['enabled'] else 'no ':<4} rule: {'yes' if s['rule_installed'] else 'no'}")
+    print("\nworker chain for code: "
+          + " → ".join([cfg.code_model or cfg.model, *cfg.fallback_models]))
     return 0
 
 
 def cmd_mode(a, cfg):
     if a.mode:
         integration.set_mode(a.mode)
-        print(f"mode: {a.mode} — takes full effect in new Claude Code sessions")
+        print(f"mode: {a.mode} — takes full effect in new agent sessions")
     st = integration.status()
     if not a.mode:
         print(f"mode: {st['mode']}")
-    print(f"  rule in ~/.claude/CLAUDE.md: {'yes' if st['rule_installed'] else 'no'}, "
-          f"skill: {'yes' if st['skill_installed'] else 'no'}")
+    for n, s in st["agents"].items():
+        if s["enabled"]:
+            print(f"  {s['title']}: rule in {integration.AGENTS[n].rules_path()}: "
+                  f"{'yes' if s['rule_installed'] else 'no'}"
+                  + (f", skill: {'yes' if st['skill_installed'] else 'no'}" if n == "claude" else ""))
     return 0
 
 
@@ -333,9 +388,19 @@ def main(argv=None):
     s.add_argument("--model", help="digest/ask model (default: pick from VRAM)")
     s.add_argument("--code-model", help="model for `halo code` (default: same as --model)")
     s.add_argument("--url", help="Ollama URL (default: auto-detect)")
-    s.add_argument("--claude", action="store_true", help="also register with Claude Code")
+    s.add_argument("--claude", action="store_true", help="same as --agent claude")
+    s.add_argument("--agent", action="append", choices=list(integration.AGENTS),
+                   help="agent that should use HALO (repeatable): claude, codex, gemini")
+    s.add_argument("--worker", action="append", metavar="CLI[:MODEL]",
+                   help="paid worker tier tried after the local models, e.g. codex, "
+                        "claude:haiku, gemini:gemini-2.5-flash (repeatable)")
     s.add_argument("-y", "--yes", action="store_true")
     s.set_defaults(fn=cmd_setup)
+
+    s = sub.add_parser("agents", help="which agents (Claude Code / Codex / Gemini) use HALO")
+    s.add_argument("action", nargs="?", choices=["add", "remove"])
+    s.add_argument("names", nargs="*", metavar="AGENT", help="claude, codex, gemini")
+    s.set_defaults(fn=cmd_agents)
 
     s = sub.add_parser("models", help="list local models that fit this machine, or download")
     s.add_argument("--pull", nargs="+", metavar="NAME")

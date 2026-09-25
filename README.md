@@ -97,11 +97,27 @@ the coding tests, so expect more escalations back to the frontier model there.
 `halo doctor` measures real throughput instead of trusting that the GPU is used. An outdated
 driver can silently push Ollama onto a fallback backend that runs 15–20× slower.
 
-## Use from Claude Code (MCP)
+## Use from your agent — Claude Code, Codex CLI or Gemini CLI (MCP)
 
-The installers connect Claude Code automatically (or run `halo setup --claude`). HALO is
-registered for all projects, so a plain `claude` in any folder works hybrid. Claude Code
-gets four tools:
+You choose which agent is in charge. The installer lists the agent CLIs it finds and asks
+which should use HALO; change it any time:
+
+```bash
+halo agents                 # which agents use HALO, and the worker chain
+halo agents add codex       # also: claude, gemini
+halo agents remove gemini
+```
+
+Each chosen agent gets the `halo` MCP server at user scope (all projects) and a short managed
+rule block in its global instructions file — `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md` or
+`~/.gemini/GEMINI.md` (your own text there is left alone). Codex asks before every MCP call and
+`codex exec` refuses them all, so HALO's tools are pre-approved for Codex
+(`default_tools_approval_mode = "approve"`); HALO confines paths itself. `halo mode` switches
+every chosen agent at once. Tested with Claude Code and Codex CLI 0.153; the Gemini CLI
+integration follows its documented `gemini mcp add` / `GEMINI.md` and is covered by tests with
+a fake CLI only.
+
+The agent gets four tools:
 
 | tool | what it does |
 |---|---|
@@ -141,22 +157,31 @@ model for inputs over `bulk_chars`), `HALO_CTX` (default 8192), `HALO_MAX_ITERS`
 `allowed_roots` (config file only) lists extra directories the MCP server may touch.
 Thinking mode is always disabled, because it makes interactive delegation far too slow.
 
-### Optional paid tier: a second frontier vendor (Codex)
+### Optional paid tiers: other frontier vendors as workers
 
-If the [Codex CLI](https://github.com/openai/codex) is installed and signed in (`codex login`,
-ChatGPT plan), the model name `codex` (or `codex:<model>`) runs `codex exec` as a worker. Put
-it *last* in the chain so free local models are always tried first:
+Any vendor CLI you are signed in to can be a worker *after* the free local models — so the
+agent in charge and the worker can be different vendors (e.g. Claude Code in charge, Codex as
+the paid tier, or the other way round):
+
+| model name | runs | sign in with |
+|---|---|---|
+| `codex` / `codex:<model>` | `codex exec` | ChatGPT plan (`codex login`) |
+| `claude` / `claude:haiku` | `claude -p` | Claude plan |
+| `gemini` / `gemini:<model>` | `gemini -p` | Google account |
 
 ```json
 "code_model": "qwen3.6:35b-a3b-q4_K_M",
 "fallback_models": ["gpt-oss:20b", "codex"]
 ```
 
-Codex is used as a text-only worker (read-only sandbox, empty scratch workspace); HALO still
-writes the file and runs your check itself, so the trust model is unchanged. Its tokens are
-recorded as `cloud_*` in the ledger and shown separately by `halo stats` — they cost plan
-quota, not money per call, but they are **not free**, and your code and spec are sent to
-OpenAI.
+or `halo setup --worker codex`. Workers are text-only: an empty scratch directory, tools and
+MCP off (read-only sandbox / `--tools ""` / plan mode) and `HALO_WORKER=1`, under which the
+HALO MCP server offers nothing, so a worker can never delegate back into HALO. HALO still
+writes the file and runs your check itself, so the trust model is unchanged. Their tokens are
+recorded as `cloud_*` in the ledger and shown separately by `halo stats` — plan quota, not
+money per call, but **not free**, and your code and spec are sent to that vendor. Putting the
+agent's own vendor in its worker chain (Claude in charge, `claude` as worker) works but only
+makes sense for a cheaper model such as `claude:haiku`.
 
 ## How savings are counted (`halo stats`)
 

@@ -113,7 +113,7 @@ def main():
     print(f"\n**{label}**: {summary['passed']}/{summary['tasks']} passed, "
           f"est. frontier-token reduction {summary['frontier_reduction_est']:.0%} "
           f"({direct} → {hybrid}), {summary['local_tokens']} local tokens, "
-          f"{summary['cloud_tokens']} codex tokens, "
+          f"{summary['cloud_tokens']} paid-worker tokens, "
           f"{summary['seconds']:.0f}s total. Results: {os.path.relpath(out, os.path.dirname(HERE))}")
 
 
