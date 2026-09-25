@@ -2,7 +2,6 @@
 worker. Fake CLIs on PATH record their argv, stdin and environment."""
 import json
 import os
-import stat
 import sys
 import unittest
 from unittest import mock
@@ -10,13 +9,13 @@ from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
+from fake_cli import make_cli  # noqa: E402
 from test_halo import BAD, CHECK, GOOD, Base  # noqa: E402
 from test_modes import Env  # noqa: E402
 from halo import config, integration, ledger, llm, mcp_server, tasks  # noqa: E402
 
-FAKE = r'''#!{py}
-import json, os, sys
-name = os.path.basename(sys.argv[0])
+FAKE = r'''import json, os, sys
+name = os.path.splitext(os.path.basename(sys.argv[0]))[0]
 # `mcp add/remove` get no input: reading an inherited stdin could block forever
 stdin = "" if sys.argv[1:2] == ["mcp"] or sys.stdin.isatty() else sys.stdin.read()
 with open(os.environ["FAKE_CLI_LOG"], "a") as fh:
@@ -44,12 +43,8 @@ elif name == "gemini":
 
 def make_bin(d: str, names=("claude", "codex", "gemini")) -> str:
     b = os.path.join(d, "bin")
-    os.makedirs(b, exist_ok=True)
     for n in names:
-        p = os.path.join(b, n)
-        with open(p, "w") as fh:
-            fh.write(FAKE.format(py=sys.executable, good=GOOD))
-        os.chmod(p, os.stat(p).st_mode | stat.S_IEXEC)
+        make_cli(b, n, FAKE.format(good=GOOD))
     return b
 
 

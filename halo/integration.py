@@ -159,6 +159,12 @@ def status() -> dict:
             "claude_cli": agents["claude"]["cli"], "agents": agents}
 
 
+def _say(msg: str) -> None:
+    """print() that cannot crash on a legacy console code page (Windows cp1252 has no ✓)."""
+    enc = getattr(sys.stdout, "encoding", None) or "ascii"
+    print(msg.encode(enc, errors="replace").decode(enc, errors="replace"))
+
+
 def _server_cmd() -> list[str]:
     exe = shutil.which("halo-mcp")
     return [exe] if exe else [sys.executable, "-m", "halo.mcp_server"]
@@ -169,7 +175,7 @@ def register_mcp(agent: str = "claude") -> int:
     a = AGENTS[agent]
     cli = shutil.which(a.cli)  # resolves .cmd shims on Windows
     if not cli:
-        print(f"  `{a.cli}` not found — install {a.title}, then run `halo setup --agent {agent}`")
+        _say(f"  `{a.cli}` not found — install {a.title}, then run `halo setup --agent {agent}`")
         return 1
     subprocess.call([cli, *a.remove], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     argv = []
@@ -217,7 +223,7 @@ def install(agents: list[str], mode: str = "hybrid") -> int:
         rc |= register_mcp(n)
     set_mode(mode)
     for n in agents:
-        print(f"  ✓ {AGENTS[n].title}: HALO tools + rule in {AGENTS[n].rules_path()}, mode: {mode}")
+        _say(f"  ✓ {AGENTS[n].title}: HALO tools + rule in {AGENTS[n].rules_path()}, mode: {mode}")
     return rc
 
 

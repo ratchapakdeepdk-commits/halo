@@ -1,18 +1,17 @@
 """The paid `codex` worker tier, with a fake codex CLI (no network, no login)."""
 import json
 import os
-import stat
 import sys
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
+from fake_cli import make_cli  # noqa: E402
 from test_halo import BAD, CHECK, GOOD, Base  # noqa: E402
 from halo import ledger, llm, tasks  # noqa: E402
 
-FAKE = r'''#!{py}
-import json, os, sys
+FAKE = r'''import json, os, sys
 args = sys.argv[1:]
 prompt = sys.stdin.read()
 log = os.environ["FAKE_CODEX_LOG"]
@@ -33,11 +32,8 @@ print(json.dumps({{"type": "turn.completed", "usage": {{"input_tokens": 1000,
 class TestCodexTier(Base):
     def setUp(self):
         super().setUp()
-        exe = os.path.join(self.dir, "codex")
-        with open(exe, "w") as fh:
-            fh.write(FAKE.format(py=sys.executable, good=GOOD, bad=BAD))
-        os.chmod(exe, os.stat(exe).st_mode | stat.S_IEXEC)
-        self.cfg.codex_bin = exe
+        self.cfg.codex_bin = make_cli(os.path.join(self.dir, "bin"), "codex",
+                                      FAKE.format(good=GOOD, bad=BAD))
         self.log = os.path.join(self.dir, "codex.log")
         os.environ["FAKE_CODEX_LOG"] = self.log
         os.environ["FAKE_CODEX_MODE"] = "good"
