@@ -136,7 +136,8 @@ from run 2), so this cost is not comparable with the others.
 
 ## Not yet measured
 
-- Larger samples and other task families: multi-file refactors, data conversion, docs.
+- Larger samples and other task families: multi-file refactors, docs. (Data conversion: see
+  the section below.)
 - Frontier models other than Sonnet, and agents other than Claude Code.
 - Smaller GPUs (8–16 GB) and the untested models in the recommendation table.
 
@@ -167,3 +168,33 @@ in the README. Token counts are from Codex's own `turn.completed` usage events.
   read token counts from the user's ledger instead of the bench ledger. Fixed; the numbers
   above were recomputed from `bench/results/ledger.jsonl`. The 23 Sep runs in §1 show
   per-task counts consistent with their own tasks.
+
+## Data-conversion tasks (27 Sep 2026)
+
+Three new single-file tasks in `bench/tasks/`: **csvjson** (RFC 4180 CSV → typed records:
+None/bool/int/float/str, leading zeros stay text, quoted fields stay text), **mdtable**
+(Markdown pipe tables: parse with alignment and `\|` escapes, render back padded, round-trip),
+**iniconf** (INI → nested dict with DEFAULT inheritance, `${key}`/`${section:key}`
+interpolation, cycle detection, coercion, no `configparser`). Reference solutions pass
+(`tests/test_bench_reference.py` now checks every task's reference in CI).
+
+`bench/run.py -k csvjson mdtable iniconf --repeat 2`, max 3 attempts, no fallback:
+
+| model | csvjson | mdtable | iniconf | passed | est. frontier-token reduction |
+|---|---|---|---|---|---|
+| qwen3:30b-a3b-instruct-2507 | 0/2 | 0/2 | 0/2 | **0/6** | −24% (55,925 → 69,130) |
+| qwen3.6:35b-a3b | 1/2 | 1/2 | 1/2 | **3/6** | 44% (80,807 → 45,494) |
+
+- These tasks are much harder for local models than the first seven: qwen3:30b-a3b passed
+  9/14 there and 0/6 here; qwen3.6:35b-a3b 13/14 there and 3/6 here. Every pass was on the
+  first attempt — when a draft failed, the retry loop never repaired it.
+- The failures are edge cases the spec states in one clause each, e.g. an escaped `\|` inside
+  a cell, a table ending at the first blank line, delimiter width counting the colons.
+- **A failed delegation costs the frontier more than doing it directly** (the spec goes out
+  and a failed draft comes back): qwen3:30b-a3b's run is a net −24%. On this task family the
+  default code model should be the stronger one, or the paid tier should follow it.
+- An earlier run of the same tasks (qwen3:30b 0/6, qwen3.6 2/3, same `--repeat` minus one)
+  showed two genuinely ambiguous phrases in the mdtable spec; they were clarified and the
+  table above is the rerun. One more qwen3.6 csvjson run that failed after 680 s was
+  interrupted and is not counted.
+

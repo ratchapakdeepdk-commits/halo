@@ -201,8 +201,10 @@ the whole input, but real agents often grep. Measured end-to-end numbers are in
 ## Benchmark
 
 `bench/tasks/` contains single-file coding tasks with unit tests: slugify, duration parser,
-roman numerals, LRU cache, Bragg-angle calculator for FCC crystals, SemVer precedence, and
-nginx log parser. Reference solutions in `bench/reference/` prove the tests are correct.
+roman numerals, LRU cache, Bragg-angle calculator for FCC crystals, SemVer precedence,
+nginx log parser, and three data-conversion tasks: CSV → typed records (csvjson), Markdown
+pipe tables parse/render (mdtable), and INI with inheritance and `${…}` interpolation
+(iniconf). Reference solutions in `bench/reference/` prove the tests are correct.
 
 ```bash
 python bench/run.py                        # configured code model
