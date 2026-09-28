@@ -157,7 +157,7 @@ class TestCode(Base):
 
     def test_failure_restores_original(self):
         self.write("mod.py", "# original\n")
-        self.fake.replies = [BAD, BAD, BAD]
+        self.fake.replies = [BAD] * 4  # 3 attempts + 1 re-roll of the unchanged repair
         r = tasks.code(self.cfg, "add", "mod.py", CHECK, workdir=self.dir)
         self.assertEqual(r["status"], "failed")
         with open(os.path.join(self.dir, "mod.py")) as fh:
@@ -178,7 +178,7 @@ class TestCode(Base):
         self.assertEqual(r["model"], "big-model")
         self.assertEqual(r["attempts"], 3)
         self.assertEqual([q["model"] for q in self.fake.requests],
-                         ["fake-model", "fake-model", "big-model"])
+                         ["fake-model", "fake-model", "fake-model", "big-model"])
         # the fallback model starts fresh, not from the first model's broken draft
         self.assertNotIn("FAILED", self.fake.requests[2]["prompt"])
 
@@ -218,6 +218,45 @@ class TestCode(Base):
     def test_extract_code(self):
         self.assertEqual(tasks.extract_code("text\n```py\nA\n```\n```\nBBB\n```"), "BBB\n")
         self.assertIsNone(tasks.extract_code("Here is the code you asked for"))
+        self.assertEqual(tasks.extract_code("Cause: off by one\nx = 1"), "x = 1\n")
+
+    def test_repair_asks_for_cause_then_restarts_when_stuck(self):
+        self.write("mod.py", "# original\n")
+        self.fake.replies = [BAD, "Cause: sign\n" + BAD, GOOD]
+        r = tasks.code(self.cfg, "add", "mod.py", CHECK, workdir=self.dir)
+        self.assertEqual(r["status"], "passed")
+        self.assertEqual(r["attempts"], 2)  # the unchanged repair did not use up an attempt
+        second, third = (q["prompt"] for q in self.fake.requests[1:])
+        self.assertIn("Cause:", second)
+        self.assertIn("return a - b", second)  # repair is anchored on the draft
+        self.assertIn("DIFFERENT approach", third)  # same file again -> start over
+        self.assertNotIn("return a - b", third)
+        self.assertIn("# original", third)
+
+    def test_restart_after_repair_without_progress(self):
+        worse = "```python\ndef add(a, b):\n    return a * b\n```"
+        self.fake.replies = [BAD, worse, GOOD]
+        r = tasks.code(self.cfg, "add", "mod.py", CHECK, workdir=self.dir)
+        self.assertEqual(r["status"], "passed")
+        self.assertIn("DIFFERENT approach", self.fake.requests[2]["prompt"])
+
+    def test_feedback_keeps_every_failure(self):
+        block = "Traceback (most recent call last):\n" + "  noise\n" * 200
+        out = "".join(f"{'=' * 70}\nFAIL: test_{i} (t.T.test_{i})\n{'-' * 70}\n{block}"
+                      f"AssertionError: boom{i}\n\n" for i in range(3))
+        out += f"{'-' * 70}\nRan 3 tests in 0.1s\n\nFAILED (failures=3)\n"
+        fb = tasks.check_feedback(out, "mod.py", "")
+        for i in range(3):
+            self.assertIn(f"test_{i}", fb)
+            self.assertIn(f"boom{i}", fb)
+        self.assertIn("failures=3", fb)
+        self.assertLess(len(fb), 4000)
+
+    def test_feedback_points_at_the_target_line(self):
+        path = os.path.join(self.dir, "mod.py")
+        out = f'Traceback:\n  File "{path}", line 2, in add\nZeroDivisionError: x\n'
+        fb = tasks.check_feedback(out, path, "def add(a, b):\n    return a / 0\n")
+        self.assertIn(">>> your line 2: return a / 0", fb)
 
 
 class TestLedger(Base):

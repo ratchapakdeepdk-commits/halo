@@ -54,7 +54,8 @@ class TestCodexTier(Base):
         r = tasks.code(self.cfg, "add two numbers", "mod.py", CHECK, workdir=self.dir,
                        max_iters=2)
         self.assertEqual((r["status"], r["model"], r["attempts"]), ("passed", "codex:gpt-5", 3))
-        self.assertEqual(len(self.fake.requests), 2)  # the free model was tried first
+        # the free model was tried first (its unchanged repair is re-rolled once: 3 calls)
+        self.assertEqual(len(self.fake.requests), 3)
         c = self.calls()[0]
         self.assertIn("-m", c["args"])
         self.assertEqual(c["args"][c["args"].index("-m") + 1], "gpt-5")

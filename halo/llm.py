@@ -52,6 +52,11 @@ def _request(cfg: Config, path: str, payload: dict | None, timeout: int):
     except urllib.error.HTTPError as e:
         body = e.read()[:300].decode(errors="replace")
         raise LocalModelError(f"Ollama HTTP {e.code} on {path}: {body}") from None
+    except TimeoutError:
+        # Ollama answered the connect but the model is still generating (slow model, long
+        # file, or another model being swapped in) - a config problem, not a dead server.
+        raise LocalModelError(f"Ollama at {cfg.ollama_url} did not finish within {timeout}s "
+                              f"(raise `timeout` in the HALO config for slow models)") from None
     except (urllib.error.URLError, OSError) as e:
         raise LocalModelError(f"cannot reach Ollama at {cfg.ollama_url}: {e}") from None
 

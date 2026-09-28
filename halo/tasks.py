@@ -45,6 +45,24 @@ CODE_SYSTEM = (
     "'#ESCALATE: <one-line reason>' instead of guessing."
 )
 
+# Repair rounds: a bare "fix it" made local models re-emit the same file (seen verbatim in
+# the data-conversion bench); naming the cause first makes them actually look at the bug.
+REPAIR_NOTE = (
+    "Your previous version (shown above as current contents) FAILED the check. Check output "
+    "(lines marked '>>> your line N' are the lines of your file that the traceback points "
+    "at):\n```\n{feedback}\n```\n"
+    "First write ONE line starting with 'Cause:' naming the exact mistake in your code that "
+    "produces this output (compare expected vs actual values). Then output the complete "
+    "fixed file in a single fenced code block.\n")
+# Same file twice in a row = the model is stuck on its approach; restart without the draft.
+RESTART_NOTE = (
+    "An earlier attempt used an approach that failed these tests and could not be fixed:\n"
+    "```\n{feedback}\n```\n"
+    "Write the file from scratch with a DIFFERENT approach (for parsing formats prefer the "
+    "standard library module made for it, e.g. csv, configparser, json, re, if the spec "
+    "allows). Re-read the spec and the tests carefully; every detail in them is checked.\n")
+CAUSE_RE = re.compile(r"^\s*Cause:.*(?:\n|$)", re.IGNORECASE)
+
 BUDGET_CHARS_PER_TOKEN = 2.5  # conservative for budgeting (non-English text is denser)
 RESERVE_TOKENS = 1500
 # Per-chunk notes are bounded so a chatty model cannot turn a 30-chunk digest into an hour.
@@ -398,7 +416,7 @@ def extract_code(text: str) -> str | None:
     blocks = FENCE_RE.findall(text or "")
     if blocks:
         return max(blocks, key=len)
-    stripped = (text or "").strip()
+    stripped = CAUSE_RE.sub("", (text or "").strip(), count=1).strip()
     # Unfenced reply: accept only if it does not look like prose.
     if stripped and not stripped.lower().startswith(("here", "sure", "i ", "the ")):
         return stripped + "\n"
@@ -440,6 +458,46 @@ def _tail(text: str, lines: int = 40, chars: int = 3000) -> str:
     return t[-chars:]
 
 
+FAIL_SPLIT_RE = re.compile(r"^(?:={20,}|_{5,} .* _{5,})$", re.MULTILINE)  # unittest / pytest
+TRACE_LINE_RE = re.compile(r'^\s*File "([^"]+)", line (\d+)')
+
+
+def check_feedback(output: str, path: str, source: str, chars: int = 3500) -> str:
+    """Check output for the repair prompt. A plain tail cut the first failure off whenever
+    tracebacks were long, and the model then kept 'fixing' only the last one. Here every
+    failure block gets an equal share, and frames in the target file are annotated with the
+    offending source line so the model does not have to count lines itself."""
+    src_lines = source.splitlines()
+    real = os.path.realpath(path)
+
+    def annotate(block: str) -> str:
+        lines, out, skip = block.splitlines(), [], False
+        for i, line in enumerate(lines):
+            if skip:  # the source line Python already printed, replaced by the marker
+                skip = False
+                continue
+            out.append(line)
+            m = TRACE_LINE_RE.match(line)
+            if m and os.path.realpath(m.group(1)) == real and 0 < int(m.group(2)) <= len(src_lines):
+                code_line = src_lines[int(m.group(2)) - 1].strip()
+                if code_line:
+                    out.append(f"    >>> your line {m.group(2)}: {code_line}")
+                    skip = i + 1 < len(lines) and lines[i + 1].strip() == code_line
+        return "\n".join(out)
+
+    parts = [p.strip("\n") for p in FAIL_SPLIT_RE.split(output) if p.strip()]
+    blocks = [p for p in parts if re.search(r"^(FAIL|ERROR)\b|Error|assert", p, re.MULTILINE)]
+    if len(blocks) < 2:
+        return _tail(annotate(output), chars=chars)
+    summary = _tail(output, lines=3, chars=200)
+    share = max(400, (chars - len(summary)) // len(blocks))
+    kept = []
+    for b in blocks:
+        b = annotate(b.split("\n" + "-" * 70 + "\nRan ")[0])
+        kept.append(b if len(b) <= share else b[:share // 2] + "\n[...]\n" + b[-share // 2:])
+    return "\n\n".join(kept + [summary])
+
+
 def code(cfg: Config, spec: str, target: str, check: str, *, workdir: str = ".",
          context_files: list[str] | None = None, max_iters: int | None = None,
          model: str | None = None, keep_on_fail: bool = False,
@@ -479,25 +537,36 @@ def code(cfg: Config, spec: str, target: str, check: str, *, workdir: str = ".",
     status, reason, used = "failed", "", model
     best = None  # (failure score, candidate, check output)
     for used in chain:
-        current, feedback = original, ""
+        current, feedback, restart, prev, rerolled = original, "", False, None, False
         for attempt in range(1, max_iters + 1):
             attempts += 1
-            prompt = (f"Task:\n{spec}\n\nTarget file: {rel}\n"
-                      f"The following check command will be run from the project root and "
-                      f"must exit with status 0:\n  {check}\n\n")
-            if ctx_text:
-                prompt += f"Read-only context files:\n{ctx_text}\n\n"
-            prompt += (f"Current contents of {rel}:\n```\n{current}```\n" if current
-                       else f"{rel} does not exist yet.\n")
-            if feedback:
-                prompt += (f"\nYour previous version (shown above as current contents) FAILED "
-                           f"the check. Output of the check:\n```\n{feedback}\n```\n"
-                           f"Fix the problem and output the complete file again.\n")
-            try:
-                reply = llm.generate(cfg, prompt, system=CODE_SYSTEM, model=used, usage=usage,
-                                     temperature=0.2 if attempt == 1 else 0.5)
-            except llm.LocalModelError as e:
-                status, reason = "error", str(e)
+            reply = None
+            while reply is None:
+                prompt = (f"Task:\n{spec}\n\nTarget file: {rel}\n"
+                          f"The following check command will be run from the project root "
+                          f"and must exit with status 0:\n  {check}\n\n")
+                if ctx_text:
+                    prompt += f"Read-only context files:\n{ctx_text}\n\n"
+                shown = original if restart else current
+                prompt += (f"Current contents of {rel}:\n```\n{shown}```\n" if shown
+                           else f"{rel} does not exist yet.\n")
+                if feedback:
+                    prompt += "\n" + (RESTART_NOTE if restart else REPAIR_NOTE).format(
+                        feedback=feedback)
+                try:
+                    reply = llm.generate(cfg, prompt, system=CODE_SYSTEM, model=used,
+                                         usage=usage, temperature=0.2 if attempt == 1 else
+                                         0.8 if restart else 0.5)
+                except llm.LocalModelError as e:
+                    status, reason = "error", str(e)
+                    break
+                # Local models often answer a repair request with the unchanged file. Running
+                # the check again would only burn the attempt, so start over right away
+                # (once per model, so a model that always echoes cannot loop forever).
+                if (feedback and not restart and not rerolled and
+                        (extract_code(reply) or "").strip() == current.strip()):
+                    restart, rerolled, reply = True, True, None
+            if reply is None:
                 break
             esc = _escalation(reply)
             if esc:
@@ -518,7 +587,12 @@ def code(cfg: Config, spec: str, target: str, check: str, *, workdir: str = ".",
             score = failure_score(last_out)
             if best is None or score <= best[0]:
                 best = (score, candidate, last_out)
-            feedback = _tail(last_out)
+            feedback = check_feedback(last_out, path, candidate)
+            # A repair that did not reduce the failures (or returned the same file) means the
+            # model is stuck on its approach: the next attempt starts over without the draft.
+            restart = (prev is not None and not restart and
+                       (candidate.strip() == prev[0] or score >= prev[1]))
+            prev = (candidate.strip(), score)
         if status == "passed":
             break
         # errors (Ollama down) and escalations also move on to the next model

@@ -198,3 +198,24 @@ interpolation, cycle detection, coercion, no `configparser`). Reference solution
   table above is the rerun. One more qwen3.6 csvjson run that failed after 680 s was
   interrupted and is not counted.
 
+### Repair rounds that actually repair (28 Sep 2026)
+
+The retry prompt used to say "fix the problem" under a tail of the check output. Changes in
+`halo/tasks.py`: the model must first name the bug on a `Cause:` line; the check output keeps
+an equal share of every failing test and marks the target-file lines the traceback points at
+(`>>> your line N`); a repair that returns the unchanged file is re-rolled once as a fresh
+attempt (different approach, original contents, temperature 0.8) without spending an attempt.
+
+Same tasks, `--repeat 4` (12 runs per model), max 3 attempts, no fallback:
+
+| model | csvjson | mdtable | iniconf | passed | passed after a repair | est. frontier-token reduction |
+|---|---|---|---|---|---|---|
+| qwen3:30b-a3b-instruct-2507 | 0/4 | 0/4 | 1/4 | **1/12** | 1 | −12% (101,655 → 113,479) |
+| qwen3.6:35b-a3b | 1/4 | 2/4 | 4/4 | **7/12** | 4 | 41% (121,265 → 71,209) |
+
+- The repair loop now contributes: 4 of qwen3.6's 7 passes came on attempt 2 or 3 (before:
+  0 of 3). The overall pass rate moved less (3/6 → 7/12), and 12 runs is a small sample.
+- qwen3:30b-a3b is still not usable for this family; two of its runs hit the 300 s request
+  timeout and are counted as `error` (now reported as a timeout, not "cannot reach Ollama").
+- csvjson remains the hardest (1/8 over both models): the type-coercion edge cases.
+
