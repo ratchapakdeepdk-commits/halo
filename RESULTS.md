@@ -219,3 +219,25 @@ Same tasks, `--repeat 4` (12 runs per model), max 3 attempts, no fallback:
   timeout and are counted as `error` (now reported as a timeout, not "cannot reach Ollama").
 - csvjson remains the hardest (1/8 over both models): the type-coercion edge cases.
 
+
+### End-to-end A/B on the data-conversion tasks (28 Sep 2026)
+
+`bench/e2e.sh code bench/tasks/<task>`, Claude Sonnet in charge, 2 rounds per task, HALO
+code model qwen3.6:35b-a3b (fallback gpt-oss:20b). The with-halo arm always ran first.
+
+| task · round | with HALO: output tok / turns / cost | baseline: output tok / turns / cost | tests |
+|---|---|---|---|
+| csvjson · 1 | 1,039 / 5 / $0.100 | 4,154 / 5 / $0.111 | both OK |
+| mdtable · 1 | 1,248 / 5 / $0.104 | 8,535 / 5 / $0.175 | both OK |
+| iniconf · 1 | 989 / 5 / $0.100 | 12,364 / 5 / $0.233 | both OK |
+| csvjson · 2 | 1,044 / 6 / $0.106 | 4,551 / 7 / $0.132 | both OK |
+| mdtable · 2 | 8,521 / 8 / $0.231 | 11,173 / 6 / $0.222 | both OK |
+| iniconf · 2 | 1,165 / 6 / $0.109 | 9,263 / 4 / $0.183 | both OK |
+| **total** | **13,966 / $0.749** | **50,040 / $1.055** | **12/12** |
+
+- Success rate is unchanged (6/6 both arms): when the local draft failed (mdtable round 2)
+  Claude finished the file itself, which is also the one run where HALO cost slightly more.
+- Output tokens −72%, cost −29%. Cost falls less than output because the HALO arm reads
+  more cached context (tool schemas + the halo_code result): 1.01M vs 0.73M cache-read tokens.
+- 6 pairs, fixed arm order; given the ±30% cache swing seen before, treat the cost figure
+  as indicative.
