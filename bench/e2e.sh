@@ -41,9 +41,9 @@ PY
 }
 
 arm() {  # arm <name> <mcp-config> <allowed-tools> <workdir> <prompt>
-  # The baseline also loses the Skill tool: a user-wide halo-delegate skill would otherwise
-  # tell it about tools it does not have.
-  local deny=(); [ "$1" = baseline ] && deny=(--disallowedTools Skill)
+  # The baseline also loses the Skill tool and the user-scope settings/CLAUDE.md: a user-wide
+  # halo-delegate skill or HALO rule block would otherwise tell it about tools it does not have.
+  local deny=(); [ "$1" = baseline ] && deny=(--disallowedTools Skill --setting-sources project,local)
   (cd "$4" && claude -p "$5" --model "$model" --strict-mcp-config --mcp-config "$2" \
      --allowedTools "$3" "${deny[@]}" --output-format stream-json --verbose \
      < /dev/null > "$out/$1.jsonl" 2>&1) || true

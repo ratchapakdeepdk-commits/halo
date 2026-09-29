@@ -241,3 +241,39 @@ code model qwen3.6:35b-a3b (fallback gpt-oss:20b). The with-halo arm always ran 
   more cached context (tool schemas + the halo_code result): 1.01M vs 0.73M cache-read tokens.
 - 6 pairs, fixed arm order; given the ±30% cache swing seen before, treat the cost figure
   as indicative.
+
+### Same A/B with the baseline first (29 Sep 2026)
+
+The runs above always put the with-halo arm first. This rerun pins the opposite order
+(`HALO_E2E_ORDER=baseline-first bench/e2e.sh code …`, same 3 tasks × 2 rounds, same models
+and HALO config, Claude Code 2.1.284). `e2e.sh` now randomises the order by default and
+prints input tokens.
+
+| task · round | with HALO: output tok / turns / cost | baseline: output tok / turns / cost | tests |
+|---|---|---|---|
+| csvjson · 1 | 1,807 / 6 / $0.078 | 1,566 / 4 / $0.075 | both OK |
+| mdtable · 1 | 2,187 / 6 / $0.085 | 1,664 / 4 / $0.048 | both OK |
+| iniconf · 1 | 813 / 4 / $0.059 | 1,575 / 4 / $0.047 | both OK |
+| csvjson · 2 | 732 / 4 / $0.058 | 1,396 / 4 / $0.043 | both OK |
+| mdtable · 2 | 902 / 4 / $0.061 | 1,805 / 4 / $0.050 | both OK |
+| iniconf · 2 | 807 / 4 / $0.059 | 1,667 / 4 / $0.048 | both OK |
+| **total** | **7,248 / $0.400** | **9,673 / $0.311** | **12/12** |
+
+- **HALO cost 29% more in this order, and more in every one of the 6 pairs.** Output tokens
+  were still 25% lower, but the baseline itself was far cheaper than on 28 Sep: Sonnet wrote
+  each file in one pass (1.4–1.8k output tokens, 4 turns) instead of 4.2–12.4k. What caused
+  that change (order, cache, model/CLI version, sampling) is not established by these runs.
+- When the baseline is that short, HALO's fixed overhead dominates: the MCP tool schemas
+  and the `halo_code` result add ~4–6k cache-write and ~12k cache-read tokens per session
+  (with-halo 66.9k write / 300k read vs baseline 44.4k / 180k over 6 sessions).
+- The local model solved 4 of 6. In the 2 failures (csvjson and mdtable, round 1) Claude
+  wrote the file itself afterwards; those are the most expensive HALO runs.
+- Taken together with the section above, the 28 Sep −29% does not hold up: across both
+  orders (12 pairs) HALO is $1.149 vs $1.366 baseline, and that is driven by the 28 Sep
+  baselines. For single files that the frontier model can write in one pass, delegation
+  does not pay; the savings shown elsewhere come from longer outputs and large inputs.
+- Leak found: the baseline arm still loaded the user-scope `~/.claude/CLAUDE.md` with the
+  HALO rule block (one baseline answer said "the halo tools weren't available, so I wrote
+  the file myself"). This affected both this run and 28 Sep. `e2e.sh` now runs the baseline
+  with `--setting-sources project,local`; it was confirmed to hide the rule. These numbers
+  were collected before that fix.
