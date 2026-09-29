@@ -5,13 +5,22 @@
 #   bench/e2e.sh digest /path/to/big.log      "What errors occurred, how often, last restart?"
 #   bench/e2e.sh code   bench/tasks/semver
 #
-# Prints tool calls, output tokens, cache reads, turns and total cost for both arms.
+# Prints tool calls, input/output tokens, cache reads, turns and total cost for both arms.
+# Arm order is random by default (prompt-cache state alone moves a run's cost by ~30%, so a
+# fixed order biases the second arm); HALO_E2E_ORDER=halo-first|baseline-first pins it.
 set -euo pipefail
 kind=$1; target=$2; question=${3:-"What errors occurred, how many times, and when did the service last restart? Be brief."}
 model=${HALO_E2E_MODEL:-sonnet}
 halo_cfg='{"mcpServers":{"halo":{"command":"'"$(command -v halo-mcp)"'"}}}'
 none_cfg='{"mcpServers":{}}'
 out=$(mktemp -d)
+case "${HALO_E2E_ORDER:-random}" in
+  halo-first) arms=(with-halo baseline);;
+  baseline-first) arms=(baseline with-halo);;
+  random) if (( RANDOM % 2 )); then arms=(baseline with-halo); else arms=(with-halo baseline); fi;;
+  *) echo "HALO_E2E_ORDER must be random, halo-first or baseline-first"; exit 2;;
+esac
+echo "arm order: ${arms[*]}"
 
 report() {
   python3 - "$1" <<'PY'
@@ -25,7 +34,7 @@ for line in open(sys.argv[1]):
     if d.get("type") == "result":
         u = d.get("usage", {})
         print(f"  answer: {d.get('result', '')[:400]!r}")
-        print(f"  tools={tools}\n  output={u.get('output_tokens')} cache_read={u.get('cache_read_input_tokens')} "
+        print(f"  tools={tools}\n  input={u.get('input_tokens')} output={u.get('output_tokens')} cache_read={u.get('cache_read_input_tokens')} "
               f"cache_write={u.get('cache_creation_input_tokens')} turns={d.get('num_turns')} "
               f"cost=${d.get('total_cost_usd', 0):.4f}")
 PY
@@ -45,7 +54,7 @@ case "$kind" in
   digest)
     log=$(realpath "$target")
     base_tools="Read,Grep,Bash(grep:*),Bash(wc:*)"
-    for a in with-halo baseline; do
+    for a in "${arms[@]}"; do
       mkdir -p "$out/$a"; cp "$log" "$out/$a/"   # each arm reads its own copy, inside its cwd
       prompt="The log is at ./$(basename "$log") (large). $question"
       if [ $a = with-halo ]; then arm $a "$halo_cfg" "mcp__halo__halo_digest,$base_tools" "$out/$a" "$prompt"
@@ -58,7 +67,7 @@ case "$kind" in
     spec=$(python3 -c "import json;print(json.load(open('$task/task.json'))['spec'])")
     prompt="In this directory, create $target_file so that \`python -m unittest test_task\` passes. Spec: $spec Be brief when done."
     tools="Read,Write,Edit,Bash(python3:*),Bash(python:*)"
-    for a in with-halo baseline; do
+    for a in "${arms[@]}"; do
       mkdir -p "$out/$a"; cp "$task/test_task.py" "$out/$a/"
       if [ $a = with-halo ]; then arm $a "$halo_cfg" "mcp__halo__halo_code,$tools" "$out/$a" "$prompt"
       else arm $a "$none_cfg" "$tools" "$out/$a" "$prompt"; fi
