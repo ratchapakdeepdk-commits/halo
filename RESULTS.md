@@ -277,3 +277,32 @@ prints input tokens.
   the file myself"). This affected both this run and 28 Sep. `e2e.sh` now runs the baseline
   with `--setting-sources project,local`; it was confirmed to hide the rule. These numbers
   were collected before that fix.
+
+### Clean rerun: random order, baseline without the HALO rule (29 Sep 2026)
+
+`bench/e2e.sh code …` after both fixes above (random arm order; the baseline runs with
+`--setting-sources project,local`, and no baseline answer mentioned HALO this time).
+Same 3 tasks × 2 rounds, same models and config. Order drawn: baseline first in 4 pairs,
+with-halo first in 2.
+
+| task · round | order | with HALO: output tok / turns / cost | baseline: output tok / turns / cost | tests |
+|---|---|---|---|---|
+| csvjson · 1 | base first | 769 / 4 / $0.058 | 1,459 / 4 / $0.042 | both OK |
+| mdtable · 1 | base first | 2,241 / 7 / $0.092 | 2,737 / 5 / $0.065 | both OK |
+| iniconf · 1 | halo first | 818 / 4 / $0.059 | 2,507 / 5 / $0.060 | both OK |
+| csvjson · 2 | halo first | 737 / 4 / $0.058 | 2,311 / 5 / $0.057 | both OK |
+| mdtable · 2 | base first | 901 / 4 / $0.061 | 2,736 / 5 / $0.065 | both OK |
+| iniconf · 2 | base first | 807 / 4 / $0.059 | 2,633 / 5 / $0.062 | both OK |
+| **total** | | **6,273 / $0.388** | **14,383 / $0.351** | **12/12** |
+
+- Output tokens −56%, cost **+10%**. HALO was cheaper in 3 pairs, dearer in 3; the one clear
+  loss is mdtable · 1, where the local draft failed and Claude wrote the file itself.
+- The local model solved 5 of 6.
+- **A successful delegation costs a near-constant ~$0.058–0.061** (4 turns: ToolSearch, Bash,
+  `halo_code`, answer). The baseline cost follows file length: $0.042–0.065 for these
+  ~70–85-line files. So these files sit at the break-even point; the saving has to come from
+  longer files. The rule block and the `halo_code` description now say this (under ~80 lines
+  written in one pass costs about the same either way).
+- Part of HALO's per-session overhead (tool schemas, ToolSearch) is paid in any session that
+  has HALO attached, whether or not it delegates, so this per-task A/B is a conservative view
+  of the marginal cost of one delegation.

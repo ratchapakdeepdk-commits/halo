@@ -39,6 +39,8 @@ This machine has a free local model behind the `halo` MCP tools. Work hybrid in 
 - Before writing a new self-contained file that a test or command can check, delegate it with
   `halo_code`. Keep the spec short and pass the test file as `context_files`. If the result
   is `failed`, fix the `.halo-draft`. If it is `escalated`, do the work yourself.
+  A file you can write in one pass in under ~80 lines costs about the same either way;
+  the saving is on longer files.
 - Keep design, multi-file changes, subtle debugging and security-sensitive code yourself.
 - If HALO says a path is outside the allowed directories, just do that step yourself.
 {END}

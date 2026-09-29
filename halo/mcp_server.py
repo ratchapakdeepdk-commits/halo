@@ -47,6 +47,8 @@ TOOLS = [
             "writes the file, runs your check command, and retries with the error output until "
             "the check exits 0 (max_iters). Use for routine, well-specified code: boilerplate, "
             "small functions/scripts, parsers, format converters, test fixtures, CLI glue. "
+            "The saving grows with file length: under ~80 lines that you can write in one pass, "
+            "delegating costs about the same as writing it yourself. "
             "You MUST give a check that really verifies behaviour (e.g. a pytest file you "
             "wrote, `python -c 'import ...; assert ...'`, a compiler). Returns status plus a "
             "diffstat only; read the file if you want to review it. On failure/escalation the "
