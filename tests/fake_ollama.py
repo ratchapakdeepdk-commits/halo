@@ -50,7 +50,10 @@ class FakeOllama:
                 r = fake.replies.pop(0) if fake.replies else "default reply"
                 if callable(r):
                     r = r(body)
-                self._send({"response": r, "prompt_eval_count": len(body["prompt"]) // 4,
+                if isinstance(r, dict):  # a raw reply, e.g. an unfinished {"done": false}
+                    self._send(r)
+                    return
+                self._send({"response": r, "done": True, "prompt_eval_count": len(body["prompt"]) // 4,
                             "eval_count": len(r) // 4, "prompt_eval_duration": 10**8,
                             "eval_duration": 10**8})
 

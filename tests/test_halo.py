@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
 from fake_ollama import FakeOllama  # noqa: E402
-from halo import config, ledger, mcp_server, router, tasks  # noqa: E402
+from halo import config, ledger, llm, mcp_server, router, tasks  # noqa: E402
 
 PY = sys.executable
 
@@ -57,6 +57,35 @@ class TestAsk(Base):
     def test_ollama_down(self):
         cfg = config.Config(ollama_url="http://127.0.0.1:1", model="x")
         self.assertEqual(tasks.ask(cfg, "hi")["status"], "error")
+
+
+class TestTransientOllama(Base):
+    """A model swap by another client makes Ollama answer 200 with an empty, unfinished
+    object. That is a retry, not the model writing an empty file."""
+    UNFINISHED = {"model": "", "created_at": "0001-01-01T00:00:00Z", "response": "",
+                  "done": False}
+
+    def setUp(self):
+        super().setUp()
+        self._waits = mock.patch.object(llm, "RETRY_WAITS", (0, 0))
+        self._waits.start()
+
+    def tearDown(self):
+        self._waits.stop()
+        super().tearDown()
+
+    def test_unfinished_reply_is_retried(self):
+        self.fake.replies = [self.UNFINISHED, self.UNFINISHED, GOOD]
+        r = tasks.code(self.cfg, "add two numbers", "mod.py", CHECK, workdir=self.dir,
+                       max_iters=1)
+        self.assertEqual((r["status"], r["attempts"]), ("passed", 1))
+        self.assertEqual(len(self.fake.requests), 3)
+
+    def test_persistent_unfinished_reply_is_an_error(self):
+        self.fake.replies = [self.UNFINISHED] * 3
+        with self.assertRaises(llm.LocalModelError) as e:
+            llm.generate(self.cfg, "hi")
+        self.assertIn("unfinished", str(e.exception))
 
 
 class TestDigest(Base):

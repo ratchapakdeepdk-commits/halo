@@ -62,6 +62,7 @@ def _request(cfg: Config, path: str, payload: dict | None, timeout: int):
 
 
 CLI_WORKERS = ("codex", "claude", "gemini")
+RETRY_WAITS = (5, 20)  # seconds between attempts on a transient Ollama failure
 
 
 def is_cloud(model: str | None) -> bool:
@@ -192,17 +193,28 @@ def generate(cfg: Config, prompt: str, *, system: str = "", model: str | None = 
         payload["options"]["num_predict"] = max_tokens
     if temperature is not None:
         payload["options"]["temperature"] = temperature
-    try:
-        d = _request(cfg, "/api/generate", payload, cfg.timeout)
-    except LocalModelError as e:
-        # Ollama sometimes fails a request while swapping models in/out of VRAM, or restarts
-        # after running out of host RAM; one retry after a pause fixes it. An unreachable
-        # server or 4xx errors are not retried.
-        msg = str(e)
-        if "HTTP 5" not in msg and "closed connection" not in msg and "reset" not in msg:
-            raise
-        time.sleep(5)
-        d = _request(cfg, "/api/generate", payload, cfg.timeout)
+    # Ollama sometimes fails a request while swapping models in/out of VRAM (another program
+    # on the same server asked for a different model), or restarts after running out of host
+    # RAM. Then it either errors (5xx, dropped connection) or - worse - answers 200 with an
+    # empty, unfinished object {"model": "", "done": false}, which used to count as the model
+    # writing nothing (seen with laguna-xs-2.1 on a shared server: tune scored 0/3). Both are
+    # retried after a pause. An unreachable server or 4xx errors are not.
+    for wait in RETRY_WAITS + (None,):
+        try:
+            d = _request(cfg, "/api/generate", payload, cfg.timeout)
+        except LocalModelError as e:
+            msg = str(e)
+            if wait is None or ("HTTP 5" not in msg and "closed connection" not in msg
+                                and "reset" not in msg):
+                raise
+        else:
+            if d.get("done") is True:
+                break
+            if wait is None:
+                raise LocalModelError(
+                    f"Ollama returned an unfinished answer {len(RETRY_WAITS) + 1} times for "
+                    f"{payload['model']} (models being swapped in VRAM by another client?)")
+        time.sleep(wait)
     if usage is not None:
         usage.prompt_tokens += d.get("prompt_eval_count", 0)
         usage.output_tokens += d.get("eval_count", 0)
