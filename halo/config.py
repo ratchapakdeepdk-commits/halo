@@ -38,6 +38,8 @@ class Config:
     codex_bin: str = ""
     claude_bin: str = ""
     gemini_bin: str = ""
+    # Who `halo council` / halo_council asks by default: vendor workers and/or local models.
+    council_models: list = field(default_factory=list)
     # Agents that use HALO (MCP + rule file), set by `halo setup --agent`: claude/codex/gemini.
     agents: list = field(default_factory=list)
 

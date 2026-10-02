@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from . import ledger, llm
 from .config import Config
@@ -108,6 +109,66 @@ def ask(cfg: Config, question: str, *, model: str | None = None,
         out["reason"] = esc
     return out
 
+
+
+# ---------------------------------------------------------------- council
+
+COUNCIL_SYSTEM = (
+    "You are giving an independent second opinion to another AI agent. State your conclusion "
+    "first, then the key reasoning or evidence for it. Point out anything in the material that "
+    "looks wrong, even if you were not asked about it. Say plainly where you are unsure. "
+    "Be concise.")
+COUNCIL_MAX_CHARS = 60000  # these run on the user's paid plans: keep each call bounded
+COUNCIL_DEFAULT = ["codex", "gemini"]
+
+
+def council_models(cfg: Config) -> list[str]:
+    return list(cfg.council_models or COUNCIL_DEFAULT)
+
+
+def council(cfg: Config, question: str, paths: list[str] | None = None, text: str = "", *,
+            models: list[str] | None = None, from_frontier: bool = True) -> dict:
+    """Ask several models (other vendors' CLIs and/or local models) the same question in
+    parallel and return every answer side by side. HALO does not merge or vote: the agent
+    that asked compares them, since that is a judgement a frontier model is good at."""
+    t0 = time.time()
+    models = models or council_models(cfg)
+    material, errors = read_inputs(paths or [], text)
+    if errors:
+        return {"status": "error", "error": "; ".join(errors)}
+    if len(material) > COUNCIL_MAX_CHARS:
+        return {"status": "error",
+                "error": f"material is {len(material)} chars, over {COUNCIL_MAX_CHARS}: "
+                         "pass only the relevant part (or halo_digest it first)"}
+    prompt = (f"<material>\n{material}\n</material>\n\nQuestion: {question}" if material
+              else question)
+
+    def one(m):
+        u, t = llm.Usage(), time.time()
+        try:
+            ans = llm.generate(cfg, prompt, system=COUNCIL_SYSTEM, model=m, usage=u)
+            r = {"model": m, "status": "ok", "answer": ans}
+        except llm.LocalModelError as e:
+            r = {"model": m, "status": "error", "error": str(e)}
+        r["seconds"] = round(time.time() - t, 1)
+        return r, u
+
+    with ThreadPoolExecutor(max_workers=len(models)) as pool:
+        done = list(pool.map(one, models))
+    total = llm.Usage()
+    for _, u in done:
+        for k in vars(total):
+            setattr(total, k, getattr(total, k) + getattr(u, k))
+    answers = [r for r, _ in done]
+    n_ok = sum(r["status"] == "ok" for r in answers)
+    status = "ok" if n_ok else "error"
+    # Not a saving: the asking agent still reads every answer. Recorded so the cost shows up.
+    read_back = sum(len(r.get("answer", "")) for r in answers)
+    fr = {"direct_in": 0, "direct_out": 0,
+          "halo_in": read_back if from_frontier else 0,
+          "halo_out": len(question) if from_frontier else 0}
+    _record(cfg, "council", status, ",".join(models), total, fr, t0)
+    return {"status": status, "answered": f"{n_ok}/{len(models)}", "answers": answers}
 
 # ---------------------------------------------------------------- digest
 

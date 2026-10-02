@@ -74,6 +74,17 @@ def _emit(res: dict, as_json: bool, main_key: str = "answer") -> int:
     return {"ok": 0, "passed": 0, "escalated": 3, "failed": 4}.get(res.get("status"), 1)
 
 
+def cmd_council(a, cfg):
+    res = tasks.council(cfg, " ".join(a.question), a.file, models=a.model or None,
+                        from_frontier=False)
+    if a.json or res["status"] == "error" and "answers" not in res:
+        return _emit(res, a.json)
+    for r in res["answers"]:
+        print(f"===== {r['model']} ({r['status']}, {r['seconds']}s) =====")
+        print(r.get("answer") or r.get("error"), end="\n\n")
+    return 0 if res["status"] == "ok" else 1
+
+
 def cmd_ask(a, cfg):
     return _emit(tasks.ask(cfg, " ".join(a.question), model=a.model, from_frontier=False), a.json)
 
@@ -343,6 +354,14 @@ def main(argv=None):
     s.add_argument("-m", "--model")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_ask)
+
+    s = sub.add_parser("council", help="ask several models/vendors the same question in parallel")
+    s.add_argument("question", nargs="+")
+    s.add_argument("-f", "--file", action="append", default=[])
+    s.add_argument("-m", "--model", action="append",
+                   help="who to ask, repeatable: codex, gemini, claude:sonnet, a local model")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_council)
 
     s = sub.add_parser("digest", help="read big files/stdin locally, return only the answer")
     s.add_argument("question", nargs="+")

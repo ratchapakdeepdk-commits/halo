@@ -52,8 +52,8 @@ halo gui                   # control panel
 `halo gui` (or the desktop shortcut) opens a local page at http://127.0.0.1:8765:
 
 - **Hybrid / Frontier only**: one switch. *Hybrid* lets Claude Code delegate routine work
-  to the local model. *Frontier only* turns HALO off completely: no tools, no rule, no
-  skill. The change takes effect in new Claude Code sessions. Same from the terminal:
+  to the local model. *Frontier only* turns the local model off: no local tools, no rule, no
+  skill; only `halo_council` (frontier vendors cross-checking each other) stays. The change takes effect in new Claude Code sessions. Same from the terminal:
   `halo mode hybrid` / `halo mode frontier`.
 - Status of Ollama, your hardware and the Claude Code connection.
 - Model selection for digest, code and fallback, plus estimated savings.
@@ -117,13 +117,14 @@ every chosen agent at once. Tested with Claude Code and Codex CLI 0.153; the Gem
 integration follows its documented `gemini mcp add` / `GEMINI.md` and is covered by tests with
 a fake CLI only.
 
-The agent gets four tools:
+The agent gets five tools:
 
 | tool | what it does |
 |---|---|
 | `halo_digest` | reads files locally and returns only the answer. Logs are compacted first, and `signals` gives exact, code-computed error counts with first/last timestamps. `checks` looks up every quote and timestamp in the answer in the original file (with line number), so the agent re-checks only `not_found` |
 | `halo_code` | generate-verify loop for one file against your check command, with a model cascade. Returns status + diffstat; on failure it keeps the best attempt as `<file>.halo-draft` |
 | `halo_ask` | short self-contained question (unverified) |
+| `halo_council` | the same question (plus files) to several models in parallel — GPT via Codex, Gemini, Claude and/or local — answers returned side by side for the agent to compare. For cross-checks, not routine work |
 | `halo_stats` | tasks delegated and estimated frontier tokens saved |
 
 The installed skill (`~/.claude/skills/halo-delegate`) teaches the agent the cost model
@@ -142,6 +143,7 @@ journalctl -u nginx -n 5000 | halo digest "top 3 error types with counts"
 halo code -t slug.py -x test_slug.py -c "python -m pytest -q test_slug.py" \
           -s "slugify(text, max_len=50): lowercase ascii, runs of non-alnum -> '-'"
 halo ask "regex for ISO-8601 dates"
+halo council -f derivation.md "is step 3 right?"    # codex + gemini (or -m ... -m ...) in parallel
 halo auto "translate this to Thai: good morning"     # simple → local; tool/judgement work → `claude -p`
 halo stats                                           # what was offloaded, estimated savings
 ```
@@ -183,6 +185,15 @@ money per call, but **not free**, and your code and spec are sent to that vendor
 agent's own vendor in its worker chain (Claude in charge, `claude` as worker) works but only
 makes sense for a cheaper model such as `claude:haiku`.
 
+**Frontier helping frontier: `halo council`.** The same workers can be asked side by side
+instead of one after another: `halo_council` sends one question (plus up to ~60k chars of
+files) to every model in `council_models` (default `["codex", "gemini"]`) in parallel and
+returns all answers, failures included. HALO does not vote or merge; the agent in charge
+compares, and agreement between vendors is evidence, not proof. It is meant for decisions
+worth a second opinion (a derivation, a review, a bug you are unsure about). Each call spends
+every member's plan quota, and the material goes to each of those vendors. It also works in
+*Frontier only* mode, where local models are dropped from the council.
+
 ## How savings are counted (`halo stats`)
 
 Every task is appended to `~/.local/share/halo/ledger.jsonl`:
@@ -204,7 +215,10 @@ the whole input, but real agents often grep. Measured end-to-end numbers are in
 roman numerals, LRU cache, Bragg-angle calculator for FCC crystals, SemVer precedence,
 nginx log parser, and three data-conversion tasks: CSV → typed records (csvjson), Markdown
 pipe tables parse/render (mdtable), and INI with inheritance and `${…}` interpolation
-(iniconf). Reference solutions in `bench/reference/` prove the tests are correct.
+(iniconf); and three longer ones whose natural solution is 150+ lines: a 5-field cron
+parser with next-run times (cron), an expression evaluator with its own tokenizer and
+recursive-descent parser (calc), and a Markdown-subset to HTML renderer (mdhtml).
+Reference solutions in `bench/reference/` prove the tests are correct.
 
 ```bash
 python bench/run.py                        # configured code model

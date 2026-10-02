@@ -294,7 +294,7 @@ class TestMCP(Base):
         self.assertIsNone(mcp_server.handle({"jsonrpc": "2.0",
                                              "method": "notifications/initialized"}))
         names = {t["name"] for t in self.rpc("tools/list")["result"]["tools"]}
-        self.assertEqual(names, {"halo_digest", "halo_code", "halo_ask", "halo_stats"})
+        self.assertEqual(names, {"halo_digest", "halo_code", "halo_ask", "halo_council", "halo_stats"})
 
     def test_check_claims(self):
         raw = ("===== a.log =====\nSep 23 10:00:01 svc[1]: started\n"

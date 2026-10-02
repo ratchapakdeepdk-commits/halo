@@ -159,7 +159,9 @@ def _cli_worker(cfg: Config, prompt: str, system: str, model: str, usage: Usage 
     try:
         answer, tin, tout, err = parse(p.stdout)
     except (ValueError, KeyError, AttributeError, TypeError):
-        answer, tin, tout, err = "", 0, 0, "unreadable output"
+        # e.g. gemini without a login prints its error JSON on stderr only
+        answer, tin, tout, err = "", 0, 0, ("unreadable output: "
+                                            + (p.stderr.strip()[-300:] or "nothing on stderr"))
     if usage is not None and (tin or tout):
         usage.cloud_in += tin
         usage.cloud_out += tout

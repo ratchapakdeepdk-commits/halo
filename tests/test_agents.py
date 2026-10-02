@@ -112,6 +112,35 @@ class TestVendorWorkers(Base):
             r = tasks.code(self.cfg, "add", "mod.py", CHECK, workdir=self.dir, max_iters=1)
         self.assertEqual((r["status"], r["model"]), ("passed", "claude"))
 
+    def test_council_asks_everyone_and_keeps_failures(self):
+        doc = os.path.join(self.dir, "proof.md")
+        with open(doc, "w") as fh:
+            fh.write("E = mc^3 therefore ...")
+        self.fake.replies = ["local says: exponent should be 2"]
+        with mock.patch.dict(os.environ, {"FAKE_FAIL": "gemini"}):
+            r = tasks.council(self.cfg, "Is this derivation right?", [doc],
+                              models=["claude", "gemini", "claude:opus", "qwen3:8b"])
+        self.assertEqual((r["status"], r["answered"]), ("ok", "3/4"))
+        by = {a["model"]: a for a in r["answers"]}
+        self.assertEqual(list(by), ["claude", "gemini", "claude:opus", "qwen3:8b"])
+        self.assertIn("return a + b", by["claude:opus"]["answer"])
+        self.assertEqual(by["gemini"]["status"], "error")
+        self.assertIn("quota exceeded", by["gemini"]["error"])
+        self.assertIn("exponent", by["qwen3:8b"]["answer"])
+        # every vendor saw the same material, with the question after it
+        for c in calls(self.log):
+            self.assertIn("E = mc^3", c["stdin"])
+            self.assertLess(c["stdin"].index("E = mc^3"), c["stdin"].index("Is this derivation"))
+            self.assertEqual(c["worker"], "1")
+        rec = ledger.read(ledger.LEDGER)[-1]
+        self.assertEqual(rec["kind"], "council")
+        self.assertGreater(rec["cloud_calls"], 1)
+
+    def test_council_refuses_huge_material(self):
+        r = tasks.council(self.cfg, "q", text="x" * (tasks.COUNCIL_MAX_CHARS + 1), models=["codex"])
+        self.assertEqual(r["status"], "error")
+        self.assertEqual(calls(self.log) if os.path.exists(self.log) else [], [])
+
     def test_mcp_offers_nothing_inside_a_worker(self):
         with mock.patch.dict(os.environ, {"HALO_WORKER": "1"}):
             r = mcp_server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})

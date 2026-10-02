@@ -8,7 +8,7 @@ import os
 import sys
 import traceback
 
-from . import __version__, config, ledger, tasks
+from . import __version__, config, ledger, llm, tasks
 
 SUPPORTED_PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"]
 
@@ -90,6 +90,30 @@ TOOLS = [
         },
     },
     {
+        "name": "halo_council",
+        "description": (
+            "Get independent second opinions from OTHER frontier models (GPT via the Codex CLI, "
+            "Gemini CLI, Claude) and/or local models, asked in parallel on the user's own plans. "
+            "Use it for things worth a cross-check: a derivation or calculation, a design or "
+            "review decision, a bug you are unsure about, a claim you cannot verify. Not for "
+            "routine work. You get every answer side by side; compare them yourself, and treat "
+            "agreement as evidence, not proof. Pass file paths (max ~60k chars) rather than "
+            "pasting. The material is sent to those vendors."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string"},
+                "paths": {"type": "array", "items": {"type": "string"},
+                          "description": "Files the models should see (optional)."},
+                "models": {"type": "array", "items": {"type": "string"},
+                           "description": "Override who is asked, e.g. [\"codex\", "
+                                          "\"gemini\", \"claude:opus\"]. Default: the "
+                                          "configured council."},
+            },
+            "required": ["question"],
+        },
+    },
+    {
         "name": "halo_stats",
         "description": "Show how many tasks were delegated and estimated frontier tokens saved.",
         "inputSchema": {"type": "object", "properties": {}},
@@ -121,7 +145,7 @@ def call_tool(name: str, args: dict) -> dict:
     cfg = config.load()
     if os.environ.get("HALO_WORKER") and name != "halo_stats":
         return {"status": "off", "error": "HALO tools are disabled inside a HALO worker."}
-    if cfg.mode != "hybrid" and name != "halo_stats":
+    if cfg.mode != "hybrid" and name not in ("halo_stats", "halo_council"):
         return {"status": "off", "error": "HALO is switched to frontier-only mode by the user. "
                                           "Do this step yourself."}
     roots = _roots(cfg)
@@ -144,6 +168,17 @@ def call_tool(name: str, args: dict) -> dict:
                           diff_mode="full" if args.get("full_diff") else "stat")
     if name == "halo_ask":
         return tasks.ask(cfg, args["question"])
+    if name == "halo_council":
+        bad = _outside(args.get("paths") or [], roots)
+        if bad:
+            return {"status": "error", "error": f"outside the allowed directories: {bad}"}
+        models = args.get("models") or None
+        if cfg.mode != "hybrid":  # frontier-only: vendors yes, local models no
+            models = [m for m in (models or tasks.council_models(cfg)) if llm.is_cloud(m)]
+            if not models:
+                return {"status": "off", "error": "frontier-only mode: no vendor models "
+                                                  "in the council"}
+        return tasks.council(cfg, args["question"], args.get("paths") or [], models=models)
     if name == "halo_stats":
         return {"status": "ok", "report": ledger.format_summary(ledger.summary(ledger.read()))}
     raise KeyError(name)
@@ -172,8 +207,12 @@ def handle(msg: dict) -> dict | None:
     if method == "tools/list":
         # Frontier-only mode: offer nothing, so new sessions do not even see the tools.
         # Inside a HALO worker (a vendor CLI HALO itself started) offer nothing: no loops.
-        on = config.load().mode == "hybrid" and not os.environ.get("HALO_WORKER")
-        return ok({"tools": TOOLS if on else []})
+        # Frontier-only mode still offers halo_council: frontier models helping each other.
+        if os.environ.get("HALO_WORKER"):
+            return ok({"tools": []})
+        if config.load().mode != "hybrid":
+            return ok({"tools": [t for t in TOOLS if t["name"] in ("halo_council", "halo_stats")]})
+        return ok({"tools": TOOLS})
     if method == "tools/call":
         p = msg.get("params") or {}
         try:
