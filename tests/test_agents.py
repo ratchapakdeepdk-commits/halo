@@ -182,6 +182,40 @@ class TestAgentChoice(Env):
         self.assertEqual(adds[0][1][:3], ["mcp", "add", "halo"])
         self.assertEqual(adds[1][1][:5], ["mcp", "add", "--scope", "user", "halo"])
 
+    def test_gui_add_remove_agent_and_council(self):
+        from halo import gui
+        import threading, urllib.error, urllib.request
+        srv = gui.ThreadingHTTPServer(("127.0.0.1", 0), gui.Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{srv.server_port}"
+
+        def post(path, body):
+            req = urllib.request.Request(base + path, data=json.dumps(body).encode(),
+                                         method="POST", headers={"X-Halo-Token": gui.TOKEN})
+            return json.load(urllib.request.urlopen(req))
+        try:
+            st = post("/api/agent", {"name": "codex", "action": "add"})
+            codex = next(a for a in st["agents"] if a["name"] == "codex")
+            self.assertTrue(codex["enabled"] and codex["cli"])
+            self.assertIn(integration.BEGIN, self.rules("codex"))
+            st = post("/api/agent", {"name": "codex", "action": "remove"})
+            self.assertFalse(next(a for a in st["agents"] if a["name"] == "codex")["enabled"])
+            self.assertEqual(self.rules("codex").count(integration.BEGIN), 0)
+
+            self.assertEqual(st["council"]["members"], ["codex", "gemini"])  # default
+            st = post("/api/council", {"members": ["claude", "gemini", "m-small", "evil"]})
+            self.assertEqual(st["council"]["members"], ["claude", "gemini", "m-small"])
+            self.assertEqual(config.load().council_models, ["claude", "gemini", "m-small"])
+            with self.assertRaises(urllib.error.HTTPError) as e:
+                post("/api/council", {"members": []})
+            self.assertEqual(e.exception.code, 400)
+            with self.assertRaises(urllib.error.HTTPError) as e:
+                post("/api/agent", {"name": "rm -rf", "action": "add"})
+            self.assertEqual(e.exception.code, 400)
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
     def test_codex_tools_are_pre_approved(self):
         os.makedirs(os.path.join(self.d, "codex"))
         cfg = os.path.join(self.d, "codex", "config.toml")

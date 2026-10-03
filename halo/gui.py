@@ -7,12 +7,14 @@ a per-process token embedded in the page, so other websites cannot flip settings
 import json
 import os
 import secrets
+import subprocess
+import sys
 import threading
 import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import __version__, catalog, config, doctor, integration, ledger, llm
+from . import __version__, catalog, config, doctor, integration, ledger, llm, tasks
 
 TOKEN = secrets.token_urlsafe(16)
 _job = {"name": None, "log": [], "running": False, "started": 0}
@@ -25,6 +27,36 @@ def _mcp_registered() -> bool:
             return "halo" in (json.load(fh).get("mcpServers") or {})
     except (OSError, ValueError):
         return False
+
+
+def _login_path() -> None:
+    """A panel started from the macOS HALO app (or a desktop launcher) gets a bare PATH
+    (/usr/bin:/bin), so agent CLIs installed with npm/Homebrew look missing. Borrow the PATH
+    of the user's login shell, plus the usual install dirs."""
+    if sys.platform == "win32":
+        return
+    extra = []
+    shell = os.environ.get("SHELL") or ("/bin/zsh" if sys.platform == "darwin" else "/bin/bash")
+    try:
+        out = subprocess.run([shell, "-ilc", 'printf "\\n__P__%s" "$PATH"'], capture_output=True,
+                             text=True, timeout=5, stdin=subprocess.DEVNULL).stdout
+        extra = out.rsplit("__P__", 1)[1].strip().split(":") if "__P__" in out else []
+    except (OSError, subprocess.SubprocessError):
+        pass
+    extra += [os.path.expanduser("~/.local/bin"), "/opt/homebrew/bin", "/usr/local/bin"]
+    have = os.environ.get("PATH", "").split(os.pathsep)
+    os.environ["PATH"] = os.pathsep.join(dict.fromkeys(have + [d for d in extra if d]))
+
+
+AGENT_HINT = {
+    "claude": "npm install -g @anthropic-ai/claude-code",
+    "codex": "npm install -g @openai/codex",
+    "gemini": "npm install -g @google/gemini-cli",
+}
+
+
+def _council_choices(installed: list[str]) -> list[str]:
+    return list(llm.CLI_WORKERS) + installed
 
 
 def status() -> dict:
@@ -53,6 +85,10 @@ def status() -> dict:
         "models": {"model": cfg.model, "code_model": cfg.code_model,
                    "fallback_models": cfg.fallback_models, "installed": installed},
         "claude": dict(integration.status(), mcp_registered=_mcp_registered()),
+        "agents": [dict(a, name=n, hint=AGENT_HINT.get(n, ""))
+                   for n, a in integration.status()["agents"].items()],
+        "council": {"members": tasks.council_models(cfg),
+                    "choices": _council_choices(installed)},
         "stats": {"tasks": t.get("tasks", 0), "ok": t.get("ok", 0) + t.get("passed", 0),
                   "local_tokens": t.get("local_in", 0) + t.get("local_out", 0),
                   "saved_upper_bound": s["frontier_saved_est"]},
@@ -153,6 +189,30 @@ class Handler(BaseHTTPRequestHandler):
                 cfg.fallback_models = [m for m in body["fallback_models"] if m in installed]
             config.save(cfg)
             self._send(status())
+        elif self.path == "/api/agent":
+            name, action = body.get("name"), body.get("action")
+            if name not in integration.AGENTS or action not in ("add", "remove"):
+                self._send({"error": "bad agent or action"}, code=400)
+                return
+            if action == "add":
+                rc = integration.install([name], config.load().mode)
+                if rc:
+                    self._send({"error": f"could not register HALO with {name} (is it "
+                                         f"installed and logged in?)"}, code=500)
+                    return
+            else:
+                integration.uninstall(name)
+            self._send(status())
+        elif self.path == "/api/council":
+            cfg = config.load()
+            choices = set(_council_choices(status()["models"]["installed"]))
+            members = [m for m in body.get("members", []) if m in choices]
+            if not members:
+                self._send({"error": "pick at least one council member"}, code=400)
+                return
+            cfg.council_models = members
+            config.save(cfg)
+            self._send(status())
         elif self.path == "/api/pull":
             allowed = {m.name for m in catalog.CATALOG}
             names = [n for n in body.get("names", []) if n in allowed]
@@ -169,6 +229,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True):
+    _login_path()
     srv = ThreadingHTTPServer((host, port), Handler)
     url = f"http://{'127.0.0.1' if host in ('0.0.0.0', '') else host}:{port}/"
     print(f"HALO control panel: {url}  (Ctrl+C to stop)")
@@ -238,10 +299,16 @@ max-height:260px;overflow:auto;white-space:pre-wrap;margin:10px 0 0}
    <button id="m-hybrid" onclick="setMode('hybrid')">Hybrid<small>Routine work goes to the local model</small></button>
    <button id="m-frontier" onclick="setMode('frontier')">Frontier only<small>HALO off; the frontier model does everything</small></button>
   </div>
-  <p class="note" id="modenote">Takes full effect in new Claude Code sessions.</p>
+  <p class="note" id="modenote">Takes full effect in new agent sessions.</p>
  </section>
  <section class="card"><h2>Local model server</h2><div id="sys"></div></section>
- <section class="card"><h2>Claude Code</h2><div id="claude"></div></section>
+ <section class="card"><h2>Agents</h2><div id="agents"></div>
+  <p class="note">Add = the agent gets HALO's tools (local delegation in Hybrid, the council in both modes). Takes effect in new sessions.</p></section>
+ <section class="card wide"><h2>Council (frontier + frontier)</h2>
+  <p class="note" style="margin:0 0 8px">Who answers when an agent asks the council (halo_council / <code>halo council</code>) for a second opinion. In Frontier only mode local models are skipped.</p>
+  <div id="council"></div>
+  <div class="btns"><button class="btn primary" onclick="saveCouncil()">Save council</button></div>
+ </section>
  <section class="card wide"><h2>Savings</h2><div class="stat" id="stats"></div>
   <p class="note">Local tokens are measured. The frontier figure is an upper bound (it assumes the frontier would have read the whole input).</p></section>
  <section class="card wide"><h2>Download local models</h2>
@@ -264,7 +331,7 @@ max-height:260px;overflow:auto;white-space:pre-wrap;margin:10px 0 0}
  </section>
 </div></main>
 <script>
-const T="__TOKEN__";let S=null;
+const T="__TOKEN__";let S=null,councilDirty=false;
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const row=(k,v)=>`<div class="row"><span>${k}</span><b>${v}</b></div>`;
@@ -276,10 +343,18 @@ function render(s){S=s;$("ver").textContent="v"+s.version;
  const h=s.hardware;
  $("sys").innerHTML=row("Ollama",dot(s.ollama.ok)+(s.ollama.ok?"running":"not reachable"))+row("URL",esc(s.ollama.url))
   +row("Hardware",esc(h.detail))+row("Model budget",h.gib.toFixed(0)+" GiB");
- const c=s.claude;
- $("claude").innerHTML=row("CLI installed",dot(c.claude_cli)+(c.claude_cli?"yes":"no"))
-  +row("HALO tools registered",dot(c.mcp_registered)+(c.mcp_registered?"yes":"no — run halo setup --claude"))
-  +row("Hybrid rule",dot(c.rule_installed)+(c.rule_installed?"active":"off"))+row("Delegation skill",dot(c.skill_installed)+(c.skill_installed?"installed":"off"));
+ $("agents").innerHTML=s.agents.map(a=>`<div class="row"><span>${dot(a.enabled&&a.cli)}${esc(a.title)}</span>`
+  +(!a.cli?`<span class="sub" title="install it, log in once, then reload">not installed — <code>${esc(a.hint)}</code></span>`
+   :a.enabled?`<button class="btn" onclick="agent('${a.name}','remove')">Remove</button>`
+   :`<button class="btn primary" onclick="agent('${a.name}','add')">Add</button>`)+`</div>`).join("");
+ if(!councilDirty){const inst=new Set(s.agents.filter(a=>a.cli).map(a=>a.name));
+  const box=m=>{const cloud=["codex","claude","gemini"].includes(m),dis=cloud&&!inst.has(m);
+   return `<label class="row" style="justify-content:flex-start"><input type="checkbox" value="${esc(m)}" ${s.council.members.includes(m)?"checked":""} ${dis?"disabled":""}>
+   ${esc(m)} <span class="sub">${cloud?({codex:"GPT via Codex",claude:"Claude",gemini:"Gemini"})[m]+(dis?" (not installed)":""):"local"}</span></label>`};
+  const cloud=s.council.choices.filter(m=>["codex","claude","gemini"].includes(m)),local=s.council.choices.filter(m=>!cloud.includes(m));
+  const nl=local.filter(m=>s.council.members.includes(m)).length;
+  $("council").innerHTML=cloud.map(box).join("")+(s.mode==="frontier"||!local.length?"":
+   `<details ${nl?"open":""}><summary class="sub" style="cursor:pointer;padding:6px 0">Local models (${nl} chosen, Hybrid only)</summary>${local.map(box).join("")}</details>`)}
  const st=s.stats,n=x=>Number(x).toLocaleString();
  $("stats").innerHTML=`<div><div class="big">${n(st.tasks)}</div><span>tasks delegated (${n(st.ok)} ok)</span></div>
   <div><div class="big">${n(st.local_tokens)}</div><span>local tokens (free)</span></div>
@@ -303,7 +378,11 @@ async function pullSel(){const names=[...document.querySelectorAll("#cat input:c
 async function refresh(){try{render(await (await fetch("/api/status")).json())}catch(e){}}
 async function setMode(m){render(await post("/api/mode",{mode:m}))}
 async function saveModels(){const fb=$("s-fb").value;render(await post("/api/models",{model:$("s-model").value,code_model:$("s-code").value,fallback_models:fb?[fb]:[]}))}
+async function agent(name,action){const r=await post("/api/agent",{name,action});if(r.error)alert(r.error);else render(r)}
+async function saveCouncil(){const members=[...document.querySelectorAll("#council input:checked")].map(b=>b.value);
+ const r=await post("/api/council",{members});if(r.error)alert(r.error);else{councilDirty=false;render(r)}}
 async function job(name){await post("/api/"+name);refresh()}
+$("council").addEventListener("change",()=>councilDirty=true);
 render(__INIT__);setInterval(refresh,2500);
 </script></body></html>
 """
