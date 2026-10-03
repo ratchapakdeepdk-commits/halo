@@ -40,7 +40,17 @@ Python and Ollama if they are missing (via winget), installs HALO, picks and pul
 your GPU, connects Claude Code, puts a **HALO** shortcut on the desktop and opens the control
 panel.
 
-**Linux / macOS:**
+**macOS:** download **`HALO-macOS.zip`** from the
+[Releases](https://github.com/ratchapakdeepdk-commits/halo/releases) page (or clone the repo),
+open it and double-click **`install.command`**. It installs [uv](https://docs.astral.sh/uv/)
+(which brings its own Python 3.12, so no admin rights or Xcode tools are needed) and Ollama if
+missing, installs HALO, picks and pulls models for your Mac (Apple Silicon: ~70% of unified
+memory), connects the agent CLIs it finds, adds a **HALO** app to `~/Applications` and the
+Desktop and opens the control panel. If macOS blocks it as "from an unidentified developer",
+right-click it → **Open** once (or System Settings → Privacy & Security → *Open Anyway*), or
+run `bash install.command` in Terminal.
+
+**Linux:**
 ```bash
 git clone https://github.com/ratchapakdeepdk-commits/halo && cd halo
 ./install.sh               # same steps; Claude Code is connected if `claude` is installed

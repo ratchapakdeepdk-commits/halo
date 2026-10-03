@@ -1,0 +1,29 @@
+name: release
+# Push a tag like v0.2.0 (or run this by hand) to publish downloads on the Releases page.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  zips:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build the download zips (git archive keeps install.command executable)
+        run: |
+          git archive --format=zip --prefix=HALO/ -o HALO-macOS.zip HEAD
+          cp HALO-macOS.zip HALO-Windows.zip
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          [[ "$GITHUB_REF_TYPE" == tag ]] || tag="latest"
+          gh release view "$tag" >/dev/null 2>&1 \
+            || gh release create "$tag" --title "HALO $tag" --notes \
+"**macOS:** download HALO-macOS.zip, open it, double-click **install.command** inside the HALO folder (blocked? right-click → Open).
+**Windows:** download HALO-Windows.zip, unzip, double-click **install.bat**.
+**Linux:** \`git clone\` the repo and run \`./install.sh\`."
+          gh release upload "$tag" HALO-macOS.zip HALO-Windows.zip --clobber

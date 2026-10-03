@@ -29,3 +29,10 @@ jobs:
       - name: run install.ps1 (no Ollama / model download)
         shell: pwsh
         run: ./install.ps1 -CiSmoke
+  macos-installer:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: run install.command (no Ollama / model download)
+        run: ./install.command --ci-smoke
+      - run: test -d ~/Applications/HALO.app && ~/.local/bin/halo mode
