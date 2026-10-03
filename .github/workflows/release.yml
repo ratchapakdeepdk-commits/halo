@@ -21,9 +21,11 @@ jobs:
         run: |
           tag="${GITHUB_REF_NAME}"
           [[ "$GITHUB_REF_TYPE" == tag ]] || tag="latest"
+          cat > notes.md <<'NOTES'
+          **macOS:** download HALO-macOS.zip, open it, double-click **install.command** in the HALO folder (blocked? right-click → Open).
+          **Windows:** download HALO-Windows.zip, unzip it, double-click **install.bat**.
+          **Linux:** clone the repo and run `./install.sh`.
+          NOTES
           gh release view "$tag" >/dev/null 2>&1 \
-            || gh release create "$tag" --title "HALO $tag" --notes \
-"**macOS:** download HALO-macOS.zip, open it, double-click **install.command** inside the HALO folder (blocked? right-click → Open).
-**Windows:** download HALO-Windows.zip, unzip, double-click **install.bat**.
-**Linux:** \`git clone\` the repo and run \`./install.sh\`."
+            || gh release create "$tag" --title "HALO $tag" --notes-file notes.md
           gh release upload "$tag" HALO-macOS.zip HALO-Windows.zip --clobber
