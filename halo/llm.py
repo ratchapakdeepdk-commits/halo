@@ -197,8 +197,10 @@ def generate(cfg: Config, prompt: str, *, system: str = "", model: str | None = 
     # on the same server asked for a different model), or restarts after running out of host
     # RAM. Then it either errors (5xx, dropped connection) or - worse - answers 200 with an
     # empty, unfinished object {"model": "", "done": false}, which used to count as the model
-    # writing nothing (seen with laguna-xs-2.1 on a shared server: tune scored 0/3). Both are
-    # retried after a pause. An unreachable server or 4xx errors are not.
+    # writing nothing. Both are retried after a pause. An unreachable server or 4xx errors are
+    # not. The same unfinished object also comes back every time when the model's own numerics
+    # break (laguna-xs-2.1 on Pascal P100s: NaN logits on some prompts, the runner samples an
+    # empty special token over and over and Ollama drops the reply) - then retrying cannot help.
     for wait in RETRY_WAITS + (None,):
         try:
             d = _request(cfg, "/api/generate", payload, cfg.timeout)
@@ -213,7 +215,8 @@ def generate(cfg: Config, prompt: str, *, system: str = "", model: str | None = 
             if wait is None:
                 raise LocalModelError(
                     f"Ollama returned an unfinished answer {len(RETRY_WAITS) + 1} times for "
-                    f"{payload['model']} (models being swapped in VRAM by another client?)")
+                    f"{payload['model']} (another client swapping models in VRAM, or the model itself "
+                    f"producing NaN/empty tokens on this prompt - try another model)")
         time.sleep(wait)
     if usage is not None:
         usage.prompt_tokens += d.get("prompt_eval_count", 0)
