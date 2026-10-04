@@ -25,8 +25,11 @@ class Base(unittest.TestCase):
         self.cfg = config.Config(ollama_url=self.fake.url, model="fake-model", max_iters=3)
         self._ledger = mock.patch.object(ledger, "LEDGER", os.path.join(self.dir, "l.jsonl"))
         self._ledger.start()
+        self._config = mock.patch.object(config, "CONFIG_PATH", os.path.join(self.dir, "c.json"))
+        self._config.start()
 
     def tearDown(self):
+        self._config.stop()
         self._ledger.stop()
         self.fake.close()
         self.tmp.cleanup()
