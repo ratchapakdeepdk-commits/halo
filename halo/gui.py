@@ -347,6 +347,9 @@ function render(s){S=s;$("ver").textContent="v"+s.version;
   +(!a.cli?`<span class="sub" title="install it, log in once, then reload">not installed — <code>${esc(a.hint)}</code></span>`
    :a.enabled?`<button class="btn" onclick="agent('${a.name}','remove')">Remove</button>`
    :`<button class="btn primary" onclick="agent('${a.name}','add')">Add</button>`)+`</div>`).join("");
+ const on=s.agents.filter(a=>a.enabled&&a.cli).map(a=>a.title);
+ $("modenote").textContent=on.length?"Takes full effect in new "+on.join(" / ")+" sessions."
+  :"No agent has HALO yet — add one under Agents.";
  if(!councilDirty){const inst=new Set(s.agents.filter(a=>a.cli).map(a=>a.name));
   const box=m=>{const cloud=["codex","claude","gemini"].includes(m),dis=cloud&&!inst.has(m);
    return `<label class="row" style="justify-content:flex-start"><input type="checkbox" value="${esc(m)}" ${s.council.members.includes(m)?"checked":""} ${dis?"disabled":""}>
