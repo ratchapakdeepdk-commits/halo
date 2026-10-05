@@ -319,6 +319,7 @@ fallback, 3 tasks × 2 rounds per run.
 | before the fix (2 runs, 9 tasks) | 0/9 | truncated files, a file containing only `cron.py` / `mdhtml.py` |
 | after the fix | 0/6 | real logic bugs: cron 1/8 tests left (dom/dow OR rule), calc column numbers, mdhtml emphasis |
 | after the fence fix (below) | 0/6 | cron 1 test left (dom/dow OR, year rollover), calc error columns, mdhtml a trailing `\n` failing all 8 |
+| + whitespace hint in repair feedback (below) | 0/6 | cron dom/dow OR again, calc `-2**2` sign / `sqrt` domain error, mdhtml `*i*`/`_i_` not turned into `<em>` |
 
 Probing every Ollama call showed two HALO bugs, not model limits:
 - **Context overflow.** A repair round on `cron` used 6,249 prompt + 1,943 output tokens =
@@ -344,3 +345,13 @@ itself extracts as 42 of its 102 lines). Fences now count only on their own line
 closing fence must be at least as long as its opener (CommonMark). Rerun: still 0/6, but
 `mdhtml` drafts now run all their tests, and one trailing newline is all that separates them
 from passing. All six failures are now model mistakes, not HALO bugs.
+
+The trailing-`\n` miss suggested the repair prompt was the problem: the extra newline is
+nearly invisible in unittest's printed diff. Repair feedback now opens with a `NOTE:` line
+when failing `assertEqual`s on strings differ only in whitespace or case (e.g. "8 of 8 failing
+assertion(s): only whitespace differs: the left side ends with 1 newline(s), the right with 0").
+Rerun (`bench/results/20261005-175002-*.json`, 1,396 s): still 0/6, and none of the six final
+failures was whitespace-only, so the hint matched nothing in them. This run's `mdhtml` drafts
+failed on emphasis logic instead. Prompts are not logged, so whether the hint fired in an
+intermediate round is unknown. Drafts differ from run to run, and these long tasks fail on a
+different bug each time: one feedback trick does not move the pass rate.
