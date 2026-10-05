@@ -8,7 +8,7 @@ import os
 import sys
 import traceback
 
-from . import __version__, config, ledger, llm, tasks
+from . import __version__, config, handoff, ledger, llm, tasks
 
 SUPPORTED_PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"]
 
@@ -114,11 +114,45 @@ TOOLS = [
         },
     },
     {
+        "name": "halo_handoff",
+        "description": (
+            "HFF: hand a whole sub-task to ANOTHER vendor's coding agent (Codex/GPT, Gemini or "
+            "Claude CLI, on the user's own plan) so it is done from that vendor's quota instead "
+            "of yours. It works as a real agent in a scratch copy of the project; HALO runs "
+            "`check`, gives repair rounds, and applies ONLY the changes inside `sector` (the "
+            "files/dirs it may touch). You get a diffstat, its summary and the check result, "
+            "not the work. Use for a separable multi-file chunk with a check (tests, build): "
+            "e.g. 'implement module X under src/x/ so tests/test_x.py passes'. Keep design, "
+            "cross-cutting changes and anything needing judgement yourself. Secrets (.env, "
+            "keys) are not copied; the rest of the project IS sent to that vendor. Review the "
+            "result (git diff) before building on it. Can take minutes."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task": {"type": "string",
+                         "description": "What to do, with the decisions already made."},
+                "sector": {"type": "array", "items": {"type": "string"},
+                           "description": "Paths or globs (relative to workdir) it may change."},
+                "check": {"type": "string",
+                          "description": "Command run from workdir that must exit 0."},
+                "workdir": {"type": "string", "description": "Project root (default: cwd)."},
+                "agent": {"type": "string",
+                          "description": "codex | gemini | claude[:model] (default: config)."},
+                "rounds": {"type": "integer", "description": "Attempts at the check (default 2)."},
+                "full_diff": {"type": "boolean"},
+            },
+            "required": ["task", "sector"],
+        },
+    },
+    {
         "name": "halo_stats",
         "description": "Show how many tasks were delegated and estimated frontier tokens saved.",
         "inputSchema": {"type": "object", "properties": {}},
     },
 ]
+
+
+FRONTIER_TOOLS = ("halo_council", "halo_handoff", "halo_stats")
 
 
 def _roots(cfg) -> list[str]:
@@ -145,7 +179,7 @@ def call_tool(name: str, args: dict) -> dict:
     cfg = config.load()
     if os.environ.get("HALO_WORKER") and name != "halo_stats":
         return {"status": "off", "error": "HALO tools are disabled inside a HALO worker."}
-    if cfg.mode != "hybrid" and name not in ("halo_stats", "halo_council"):
+    if cfg.mode != "hybrid" and name not in FRONTIER_TOOLS:
         return {"status": "off", "error": "HALO is switched to frontier-only mode by the user. "
                                           "Do this step yourself."}
     roots = _roots(cfg)
@@ -179,6 +213,15 @@ def call_tool(name: str, args: dict) -> dict:
                 return {"status": "off", "error": "frontier-only mode: no vendor models "
                                                   "in the council"}
         return tasks.council(cfg, args["question"], args.get("paths") or [], models=models)
+    if name == "halo_handoff":
+        workdir = args.get("workdir") or os.getcwd()
+        bad = _outside([workdir], roots)
+        if bad:
+            return _denied(bad, roots)
+        return handoff.handoff(cfg, args["task"], args.get("sector") or [], workdir=workdir,
+                               check=args.get("check", ""), agent=args.get("agent"),
+                               rounds=args.get("rounds"),
+                               diff_mode="full" if args.get("full_diff") else "stat")
     if name == "halo_stats":
         return {"status": "ok", "report": ledger.format_summary(ledger.summary(ledger.read()))}
     raise KeyError(name)
@@ -205,13 +248,12 @@ def handle(msg: dict) -> dict | None:
     if method == "ping":
         return ok({})
     if method == "tools/list":
-        # Frontier-only mode: offer nothing, so new sessions do not even see the tools.
         # Inside a HALO worker (a vendor CLI HALO itself started) offer nothing: no loops.
-        # Frontier-only mode still offers halo_council: frontier models helping each other.
+        # Frontier-only mode offers only the frontier-to-frontier tools (council, handoff).
         if os.environ.get("HALO_WORKER"):
             return ok({"tools": []})
         if config.load().mode != "hybrid":
-            return ok({"tools": [t for t in TOOLS if t["name"] in ("halo_council", "halo_stats")]})
+            return ok({"tools": [t for t in TOOLS if t["name"] in FRONTIER_TOOLS]})
         return ok({"tools": TOOLS})
     if method == "tools/call":
         p = msg.get("params") or {}

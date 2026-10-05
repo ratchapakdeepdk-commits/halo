@@ -61,10 +61,11 @@ class TestModes(Env):
         self.assertFalse(integration.status()["skill_installed"])
         self.assertEqual(config.load().mode, "frontier")
 
-    def test_mcp_offers_only_council_in_frontier_mode(self):
+    def test_mcp_offers_only_frontier_tools_in_frontier_mode(self):
         integration.set_mode("frontier")
         r = mcp_server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
-        self.assertEqual([t["name"] for t in r["result"]["tools"]], ["halo_council", "halo_stats"])
+        self.assertEqual([t["name"] for t in r["result"]["tools"]],
+                         ["halo_council", "halo_handoff", "halo_stats"])
         # ...and a council there never reaches a local model, even when asked to
         r = mcp_server.handle({"jsonrpc": "2.0", "id": 9, "method": "tools/call",
                                "params": {"name": "halo_council", "arguments": {
@@ -77,7 +78,7 @@ class TestModes(Env):
         self.assertEqual(self.fake.requests, [])
         integration.set_mode("hybrid")
         r = mcp_server.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
-        self.assertEqual(len(r["result"]["tools"]), 5)
+        self.assertEqual(len(r["result"]["tools"]), 6)
 
     def test_bad_mode(self):
         with self.assertRaises(ValueError):

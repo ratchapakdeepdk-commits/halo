@@ -127,7 +127,7 @@ every chosen agent at once. Tested with Claude Code and Codex CLI 0.153; the Gem
 integration follows its documented `gemini mcp add` / `GEMINI.md` and is covered by tests with
 a fake CLI only.
 
-The agent gets five tools:
+The agent gets six tools:
 
 | tool | what it does |
 |---|---|
@@ -135,6 +135,7 @@ The agent gets five tools:
 | `halo_code` | generate-verify loop for one file against your check command, with a model cascade. Returns status + diffstat; on failure it keeps the best attempt as `<file>.halo-draft` |
 | `halo_ask` | short self-contained question (unverified) |
 | `halo_council` | the same question (plus files) to several models in parallel — GPT via Codex, Gemini, Claude and/or local — answers returned side by side for the agent to compare. For cross-checks, not routine work |
+| `halo_handoff` | HFF: a whole multi-file sub-task to another vendor's agent (Codex, Gemini, Claude CLI) in a scratch copy of the project; HALO runs the check, gives repair rounds and applies only changes inside the given `sector` |
 | `halo_stats` | tasks delegated and estimated frontier tokens saved |
 
 The installed skill (`~/.claude/skills/halo-delegate`) teaches the agent the cost model
@@ -154,6 +155,8 @@ halo code -t slug.py -x test_slug.py -c "python -m pytest -q test_slug.py" \
           -s "slugify(text, max_len=50): lowercase ascii, runs of non-alnum -> '-'"
 halo ask "regex for ISO-8601 dates"
 halo council -f derivation.md "is step 3 right?"    # codex + gemini (or -m ... -m ...) in parallel
+halo handoff -s src/inventory -c "python -m pytest -q tests/test_inventory.py" \
+             "implement the inventory package so the tests pass"   # Codex does it (-a gemini|claude:haiku)
 halo auto "translate this to Thai: good morning"     # simple → local; tool/judgement work → `claude -p`
 halo stats                                           # what was offloaded, estimated savings
 ```
@@ -203,6 +206,22 @@ compares, and agreement between vendors is evidence, not proof. It is meant for 
 worth a second opinion (a derivation, a review, a bug you are unsure about). Each call spends
 every member's plan quota, and the material goes to each of those vendors. It also works in
 *Frontier only* mode, where local models are dropped from the council.
+
+**Sharing the work between vendors: `halo handoff` (HFF, hybrid frontier-frontier).** Council
+asks for opinions; handoff hands over *work*. The agent in charge passes a task, a `sector`
+(files, directories or globs the other agent may change) and a check command. HALO copies the
+project to a scratch directory (without `.git`, caches and secrets such as `.env` and key
+files; `venv`/`node_modules` are linked so checks still run), runs the other vendor's CLI there
+as a real agent (`codex exec -s workspace-write`; Claude Code with file tools only; Gemini in
+`auto_edit`), runs the check itself and gives up to `handoff_rounds` (default 2) repair rounds
+with the check output. Only changes inside the sector come back: anything else is dropped and
+listed, and if the agent in charge edited one of those files in the meantime nothing is
+applied and a patch is saved under `~/.local/share/halo/handoffs/`. The result is a diffstat,
+the other agent's short summary and the check result, so the agent in charge spends a few
+hundred tokens instead of doing the work on its own quota. On a toy two-module task with
+tests, `codex` passed in one round (59 s, 73k Codex input tokens) and `claude:haiku` in one
+round (33 s). The project (minus secrets) is sent to that vendor; default agent is
+`handoff_agent` (`codex`). Like council, it stays available in *Frontier only* mode.
 
 ## How savings are counted (`halo stats`)
 

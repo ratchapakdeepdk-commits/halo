@@ -43,6 +43,11 @@ class Config:
     gemini_bin: str = ""
     # Who `halo council` / halo_council asks by default: vendor workers and/or local models.
     council_models: list = field(default_factory=list)
+    # HFF (frontier-to-frontier handoff): which vendor agent takes a whole sub-task, how many
+    # rounds it gets to make the check pass, and how long one round may run.
+    handoff_agent: str = "codex"
+    handoff_rounds: int = 2
+    handoff_timeout: int = 900
     # Agents that use HALO (MCP + rule file), set by `halo setup --agent`: claude/codex/gemini.
     agents: list = field(default_factory=list)
 

@@ -176,6 +176,65 @@ def _cli_worker(cfg: Config, prompt: str, system: str, model: str, usage: Usage 
     return answer.strip()
 
 
+# Agent mode (HFF handoff): the vendor CLI works as a real agent inside a scratch copy of the
+# project. Each one may edit files only in that copy; shell access follows its own sandbox.
+def _agent_codex(exe: str, sub: str, work: str) -> list:
+    # workspace-write: commands run sandboxed, writes only inside `work`, no network.
+    cmd = [exe, "exec", "--json", "--ephemeral", "--skip-git-repo-check",
+           "--ignore-user-config", "-s", "workspace-write", "-C", work]
+    return cmd + (["-m", sub] if sub else []) + ["-"]
+
+
+def _agent_claude(exe: str, sub: str, work: str) -> list:
+    # File tools only, no Bash (Claude Code has no sandbox here): HALO runs the check itself.
+    cmd = [exe, "-p", "--output-format", "json", "--strict-mcp-config",
+           "--tools", "Read,Edit,Write,Glob,Grep", "--permission-mode", "acceptEdits",
+           "--no-session-persistence"]
+    return cmd + (["--model", sub] if sub else [])
+
+
+def _agent_gemini(exe: str, sub: str, work: str) -> list:
+    # auto_edit: edit tools approved, shell commands refused in headless mode.
+    cmd = [exe, "-o", "json", "--approval-mode", "auto_edit",
+           "--allowed-mcp-server-names", "halo-worker-none", "-p", ""]
+    return cmd + (["-m", sub] if sub else [])
+
+
+_AGENT = {"codex": _agent_codex, "claude": _agent_claude, "gemini": _agent_gemini}
+
+
+def cli_agent(cfg: Config, prompt: str, model: str, work: str, usage: Usage | None = None,
+              timeout: int | None = None) -> str:
+    """Run a vendor CLI as an agent with `work` as its workspace; returns its final message.
+    Raises LocalModelError when the CLI is missing, fails or times out."""
+    name, _, sub = model.partition(":")
+    if name not in _AGENT:
+        raise LocalModelError(f"{model} is not an agent CLI (use one of {', '.join(_AGENT)})")
+    exe = shutil.which(getattr(cfg, f"{name}_bin", "") or name)
+    if not exe:
+        raise LocalModelError(f"{name} CLI not found (install it and sign in first)")
+    env = dict(os.environ, HALO_WORKER="1")  # no HALO tools inside: no delegation loops
+    timeout = timeout or cfg.timeout
+    try:
+        p = subprocess.run(_AGENT[name](exe, sub, work), input=prompt, capture_output=True,
+                           text=True, timeout=timeout, cwd=work, env=env)
+    except subprocess.TimeoutExpired:
+        raise LocalModelError(f"{name} timed out after {timeout}s") from None
+    try:
+        answer, tin, tout, err = _CLI[name][1](p.stdout)
+    except (ValueError, KeyError, AttributeError, TypeError):
+        answer, tin, tout, err = "", 0, 0, ("unreadable output: "
+                                            + (p.stderr.strip()[-300:] or "nothing on stderr"))
+    if usage is not None and (tin or tout):
+        usage.cloud_in += tin
+        usage.cloud_out += tout
+        usage.cloud_calls += 1
+    if p.returncode != 0 or err:
+        raise LocalModelError(f"{name} failed (exit {p.returncode}): "
+                              f"{err or p.stderr.strip()[-300:] or 'no output'}")
+    return answer.strip()
+
+
 def generate(cfg: Config, prompt: str, *, system: str = "", model: str | None = None,
              usage: Usage | None = None, num_ctx: int | None = None,
              temperature: float | None = None, max_tokens: int | None = None) -> str:

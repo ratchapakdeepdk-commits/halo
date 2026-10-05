@@ -9,7 +9,8 @@ import subprocess
 import sys
 import time
 
-from . import __version__, catalog, config, doctor, integration, ledger, llm, router, tasks
+from . import (__version__, catalog, config, doctor, handoff, integration, ledger, llm,
+               router, tasks)
 
 
 
@@ -83,6 +84,30 @@ def cmd_council(a, cfg):
         print(f"===== {r['model']} ({r['status']}, {r['seconds']}s) =====")
         print(r.get("answer") or r.get("error"), end="\n\n")
     return 0 if res["status"] == "ok" else 1
+
+
+def cmd_handoff(a, cfg):
+    res = handoff.handoff(cfg, " ".join(a.task), a.sector, workdir=a.workdir, check=a.check or "",
+                          agent=a.agent, rounds=a.rounds, apply=not a.no_apply,
+                          diff_mode="full" if a.diff else "stat")
+    if a.json:
+        return _emit(res, True)
+    print(f"{res['status']}  agent={res.get('agent')}  rounds={res.get('rounds')}  "
+          f"applied={res.get('applied')}  {res.get('seconds', '')}s")
+    for k in ("reason", "note", "patch"):
+        if res.get(k):
+            print(f"{k}: {res[k]}")
+    for line in res.get("diffstat", []):
+        print("  " + line)
+    if res.get("dropped_outside_sector"):
+        print("dropped (outside sector): " + ", ".join(res["dropped_outside_sector"]))
+    if res.get("diff"):
+        print(res["diff"])
+    if res.get("agent_summary"):
+        print("--- agent summary ---\n" + res["agent_summary"])
+    if res.get("last_check_output"):
+        print("--- last check output ---\n" + res["last_check_output"])
+    return {"passed": 0, "done": 0, "escalated": 3, "failed": 4}.get(res["status"], 1)
 
 
 def cmd_ask(a, cfg):
@@ -362,6 +387,20 @@ def main(argv=None):
                    help="who to ask, repeatable: codex, gemini, claude:sonnet, a local model")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_council)
+
+    s = sub.add_parser("handoff", help="HFF: hand a sub-task to another vendor's agent "
+                                       "(codex/gemini/claude) inside a sector of the project")
+    s.add_argument("task", nargs="+")
+    s.add_argument("-s", "--sector", action="append", required=True,
+                   help="file, directory or glob the agent may change (repeatable)")
+    s.add_argument("-c", "--check", help="command that must exit 0, run from the workdir")
+    s.add_argument("-a", "--agent", help="codex, gemini, claude[:model] (default: config)")
+    s.add_argument("-C", "--workdir", default=".")
+    s.add_argument("-r", "--rounds", type=int)
+    s.add_argument("--no-apply", action="store_true", help="only save a patch")
+    s.add_argument("--diff", action="store_true", help="print the full diff")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_handoff)
 
     s = sub.add_parser("digest", help="read big files/stdin locally, return only the answer")
     s.add_argument("question", nargs="+")
