@@ -384,3 +384,38 @@ baseline-first.
 - Caveat: in the HALO arm Claude only re-ran the tests and did not read the code (it said so
   in its answer). Code quality beyond the tests was not compared. One task, one controller model.
 
+### With a review of the diff (6 Oct 2026)
+
+The first runs had a gap: Claude only re-ran the tests and never read Codex's code. `halo_handoff`
+now returns the diff inline when it is at most 8k chars (`diff_mode` "auto"), and `e2e.sh`
+tells the HALO arm to "review the returned diff for bugs the tests do not cover and fix any you
+find" (`HALO_E2E_REVIEW=0` restores the old prompt). Two pairs, both HALO-first:
+
+| pair | baseline cost / output tok / turns | HALO cost / output tok / turns | Codex side |
+|---|---|---|---|
+| 1 | $0.0902 / 3,565 / 7 | $0.0883 / 1,346 / 5 (1 Edit) | 130.7k / 5.4k, 130 s |
+| 2 | $0.0856 / 3,700 / 8 | $0.0990 / 1,574 / 5 (fix via Bash) | 91.4k / 3.5k, 70 s |
+
+With a review the saving on a job this size is gone: $0.187 vs $0.176 (+6%). Reading the diff
+(~5k extra cache-write tokens) and fixing what it finds costs about as much as writing 111
+lines. Output tokens still fall ~60%.
+
+The review was not wasted. Both times Claude found input validation that Codex had left loose
+(`date.fromisoformat` accepting `20260101` and ISO week dates on Python 3.11+, amounts in
+exponent form). To see whether this is a Codex trait or just noise, every arm's parser from
+this and the earlier runs was probed with eight malformed lines the tests do not cover
+(`1e2`, `1_000`, `.5`, `1.`, `NaN`, full-width digits, `20260101`, `2026-W01-1`):
+
+| run | Sonnet wrote it (baseline) accepts | Codex wrote it (HALO arm) accepts |
+|---|---|---|
+| review 1 | `20260101`, `2026-W01-1`, full-width | `1e2`, `1.`, `.5`, `1_000`, `2026-W01-1`, full-width (after Claude's fix) |
+| review 2 | full-width | `1e2`, `1.`, `.5`, `1_000`, full-width (after Claude's fix) |
+| no-review 3 | full-width | `1e2`, `1.`, `.5`, `1_000`, `20260101`, `2026-W01-1`, full-width |
+| no-review 4 | full-width | full-width |
+
+Codex's code was looser than Sonnet's in 3 of 4 runs, and Claude's review fixed the dates but
+not the amounts. So: **hand off when the tests pin the behaviour down**. When correctness
+depends on things the tests do not cover, the review the agent in charge has to do takes back
+the saving on jobs of this size. Whether the saving returns on larger jobs (review is mostly
+reading, which costs ~1/5 of writing) is the next thing to measure.
+

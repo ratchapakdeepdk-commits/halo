@@ -89,7 +89,7 @@ def cmd_council(a, cfg):
 def cmd_handoff(a, cfg):
     res = handoff.handoff(cfg, " ".join(a.task), a.sector, workdir=a.workdir, check=a.check or "",
                           agent=a.agent, rounds=a.rounds, apply=not a.no_apply,
-                          diff_mode="full" if a.diff else "stat")
+                          diff_mode="full" if a.diff else "stat")  # terminal: diffstat
     if a.json:
         return _emit(res, True)
     print(f"{res['status']}  agent={res.get('agent')}  rounds={res.get('rounds')}  "

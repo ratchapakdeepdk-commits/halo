@@ -34,6 +34,9 @@ SECRET_FILES = (".env", ".env.*", "*.pem", "*.key", "id_rsa*", "id_ed25519*", "*
 PATCH_DIR = os.path.join(DATA_DIR, "handoffs")  # patches that were not applied
 MAX_FILES = 5000
 MAX_BYTES = 200 * 1024 * 1024
+# diff_mode "auto": the diff comes back inline when it is at most this long, so the agent in
+# charge can review the work in the same turn instead of opening every file (more turns).
+AUTO_DIFF_CHARS = 8000
 MAX_TEXT = 2 * 1024 * 1024  # larger files are compared by hash but never diffed
 
 AGENT_RULES = """You are working on a task handed over by another AI agent through HALO.
@@ -178,7 +181,7 @@ def _diff(old_root: str, new_root: str, rels: list[str]) -> tuple[str, list[str]
 
 def handoff(cfg: Config, task: str, sector: list[str], *, workdir: str = ".",
             check: str = "", agent: str | None = None, rounds: int | None = None,
-            apply: bool = True, diff_mode: str = "stat") -> dict:
+            apply: bool = True, diff_mode: str = "auto") -> dict:
     """Run `agent` on `task` in a copy of `workdir`; bring back the changes inside `sector`."""
     t0 = time.time()
     usage = llm.Usage()
@@ -280,8 +283,11 @@ def handoff(cfg: Config, task: str, sector: list[str], *, workdir: str = ".",
         result["last_check_output"] = tasks._tail(out, lines=15, chars=1200)
     elif check and status == "passed":
         result["check_summary"] = tasks._tail(out, lines=3, chars=300)
-    if diff_mode == "full" and diff:
+    if diff and (diff_mode == "full" or diff_mode == "auto" and len(diff) <= AUTO_DIFF_CHARS):
         result["diff"] = diff[:20000]
+    elif diff and diff_mode == "auto":
+        result["diff_omitted"] = (f"{len(diff)} chars; review the changed files or call again "
+                                  f"with full_diff")
 
     # Done directly, the controller would read the files it changes and write the new ones;
     # via HALO it writes the task and reads this report. Conservative: exploration is free.

@@ -125,7 +125,8 @@ TOOLS = [
             "e.g. 'implement module X under src/x/ so tests/test_x.py passes'. Keep design, "
             "cross-cutting changes and anything needing judgement yourself. Secrets (.env, "
             "keys) are not copied; the rest of the project IS sent to that vendor. Review the "
-            "result (git diff) before building on it. Can take minutes."),
+            "result before building on it (the diff comes back inline when small). Can take "
+            "minutes."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -139,7 +140,9 @@ TOOLS = [
                 "agent": {"type": "string",
                           "description": "codex | gemini | claude[:model] (default: config)."},
                 "rounds": {"type": "integer", "description": "Attempts at the check (default 2)."},
-                "full_diff": {"type": "boolean"},
+                "full_diff": {"type": "boolean",
+                              "description": "true = always return the diff, false = never. "
+                                             "Default: returned when small (~8k chars)."},
             },
             "required": ["task", "sector"],
         },
@@ -221,7 +224,8 @@ def call_tool(name: str, args: dict) -> dict:
         return handoff.handoff(cfg, args["task"], args.get("sector") or [], workdir=workdir,
                                check=args.get("check", ""), agent=args.get("agent"),
                                rounds=args.get("rounds"),
-                               diff_mode="full" if args.get("full_diff") else "stat")
+                               diff_mode={True: "full", False: "stat"}.get(
+                                   args.get("full_diff"), "auto"))
     if name == "halo_stats":
         return {"status": "ok", "report": ledger.format_summary(ledger.summary(ledger.read()))}
     raise KeyError(name)

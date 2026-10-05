@@ -5,7 +5,8 @@
 #   bench/e2e.sh digest /path/to/big.log      "What errors occurred, how often, last restart?"
 #   bench/e2e.sh code   bench/tasks/semver
 #   bench/e2e.sh handoff bench/handoff/txledger      # HFF: baseline does it, HALO arm hands it
-#                                                    # to HALO_E2E_AGENT (default codex)
+#                                                    # to HALO_E2E_AGENT (default codex) and
+#                                                    # reviews its diff (HALO_E2E_REVIEW=0: no)
 #
 # Prints tool calls, input/output tokens, cache reads, turns and total cost for both arms.
 # Arm order is random by default (prompt-cache state alone moves a run's cost by ~30%, so a
@@ -79,6 +80,10 @@ case "$kind" in
   handoff)
     proj=$(realpath "$target")
     agent=${HALO_E2E_AGENT:-codex}
+    # HALO_E2E_REVIEW=0 reproduces the first runs (tests only, the code was never read).
+    if [ "${HALO_E2E_REVIEW:-1}" = 1 ]; then
+      review="review the returned diff for bugs the tests do not cover and fix any you find."
+    else review="check the result."; fi
     field() { python3 -c "import json,sys;v=json.load(open('$proj/task.json'))[sys.argv[1]];print(v if isinstance(v,str) else '\", \"'.join(v))" "$1"; }
     task=$(field task); sector=$(field sector); check=$(field check)
     tools="Read,Write,Edit,Glob,Grep,Bash(python3:*),Bash(python:*)"
@@ -86,7 +91,7 @@ case "$kind" in
       mkdir -p "$out/$a"; cp -r "$proj"/. "$out/$a/"; rm "$out/$a/task.json"
       if [ $a = with-halo ]; then
         arm $a "$halo_cfg" "mcp__halo__halo_handoff,$tools" "$out/$a" \
-          "$task Hand this whole job to $agent with halo_handoff (agent \"$agent\", sector [\"$sector\"], check \"$check\"), then check the result. Be brief when done."
+          "$task Hand this whole job to $agent with halo_handoff (agent \"$agent\", sector [\"$sector\"], check \"$check\"), then $review Be brief when done."
       else arm $a "$none_cfg" "$tools" "$out/$a" "$task Check: $check. Be brief when done."; fi
       echo "  tests: $(cd "$out/$a" && PYTHONDONTWRITEBYTECODE=1 $check 2>&1 | tail -1)"
       [ $a = with-halo ] && python3 -c "

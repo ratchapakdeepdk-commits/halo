@@ -136,6 +136,16 @@ class TestHandoff(Base):
         self.assertFalse(os.path.exists(os.path.join(self.proj, "src", "x.py")))
         self.assertIn("src/x.py: +0 -2 (deleted)", r["diffstat"])
 
+    def test_small_diff_inline_large_diff_omitted(self):
+        r = self.run_rounds([{"write": {"src/x.py": GOOD}}])
+        self.assertIn("+    return 2", r["diff"])
+        big = GOOD + "".join(f"# filler line {i} " + "x" * 60 + "\n" for i in range(200))
+        r = self.run_rounds([{"write": {"src/x.py": big}}])
+        self.assertNotIn("diff", r)
+        self.assertIn("full_diff", r["diff_omitted"])
+        r = self.run_rounds([{"write": {"src/x.py": GOOD}}], diff_mode="stat")
+        self.assertNotIn("diff", r)
+
     def test_glob_sector(self):
         r = self.run_rounds([{"write": {"src/x.py": GOOD, "src/x.txt": "t\n"}}],
                             sector=["src/*.py"])
