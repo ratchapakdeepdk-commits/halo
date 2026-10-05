@@ -327,6 +327,30 @@ class TestCode(Base):
         fb = tasks.check_feedback(out, path, "def add(a, b):\n    return a / 0\n")
         self.assertIn(">>> your line 2: return a / 0", fb)
 
+    def test_feedback_names_a_whitespace_only_difference(self):
+        # Real unittest output: the trailing '\n' is easy to miss in the printed diff (the
+        # mdhtml bench failed 8/8 tests on it for three repair rounds).
+        with open(os.path.join(self.dir, "test_ws.py"), "w") as fh:
+            fh.write("import unittest\nclass T(unittest.TestCase):\n"
+                     "    def test_a(self): self.assertEqual('<p>a != b</p>\\n', '<p>a != b</p>')\n"
+                     "    def test_b(self): self.assertEqual('x\\n', 'x')\n"
+                     "    def test_c(self): self.assertEqual(3, 4)\n")
+        ok, out = tasks._run_check(f"{sys.executable} -m unittest -q test_ws", self.dir, 30)
+        self.assertFalse(ok)
+        fb = tasks.check_feedback(out, "mod.py", "")
+        self.assertTrue(fb.startswith("NOTE: 2 of 3 failing assertion(s): only whitespace"), fb)
+        self.assertIn("ends with 1 newline(s), the right with 0", fb)
+
+    def test_whitespace_hint_cases(self):
+        h = tasks.whitespace_hint
+        self.assertIsNone(h("x", "y"))
+        self.assertIsNone(h(3, 4))
+        self.assertEqual(h("A", "a"), "only letter case differs")
+        self.assertIn("first at line 2 of it: 'two  </p>' vs 'two</p>'",
+                      h("<p>one\ntwo  </p>", "<p>one\ntwo</p>"))
+        self.assertEqual(tasks._literal_pair("'a != b' != 'a'"), ("a != b", "a"))
+        self.assertIsNone(tasks._literal_pair("'abc[12 chars]' != 'x'"))
+
 
 class TestLedger(Base):
     def test_only_successes_count_as_saved(self):

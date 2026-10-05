@@ -6,6 +6,7 @@ Every task returns a dict with a `status` field:
   failed       - checks never passed within the iteration budget
   error        - infrastructure problem (Ollama down, bad path...)
 """
+import ast
 import difflib
 import json
 import os
@@ -564,7 +565,75 @@ FAIL_SPLIT_RE = re.compile(r"^(?:={20,}|_{5,} .* _{5,})$", re.MULTILINE)  # unit
 TRACE_LINE_RE = re.compile(r'^\s*File "([^"]+)", line (\d+)')
 
 
+ASSERT_EQ_RE = re.compile(r"^(?:AssertionError|E\s+AssertionError): (?:assert )?(.+)$", re.MULTILINE)
+
+
+SHORTENED_RE = re.compile(r"\[\d+ chars\]")
+
+
+def _literal_pair(text: str):
+    """Split "'a' != 'b'" (unittest) or "'a' == 'b'" (pytest) into two Python values. The
+    split point is ambiguous when the strings themselves contain ' != ', so every candidate is
+    tried. Reprs that unittest shortened ('abc[12 chars]xyz') still parse but are not the
+    real values, so they are skipped."""
+    if SHORTENED_RE.search(text):
+        return None
+    for op in (" != ", " == "):
+        start = 0
+        while (i := text.find(op, start)) != -1:
+            start = i + 1
+            try:
+                return ast.literal_eval(text[:i]), ast.literal_eval(text[i + len(op):].strip())
+            except (ValueError, SyntaxError, MemoryError, RecursionError):
+                continue
+    return None
+
+
+def whitespace_hint(left, right) -> str | None:
+    """Name a difference the model cannot see in a printed diff: two strings that differ only
+    in whitespace or case. In the mdhtml bench all 8 tests failed on one extra trailing '\\n'
+    and three repair rounds never noticed it. Sides are named as printed (assertEqual's
+    first argument is usually the code's output, but not always)."""
+    if not (isinstance(left, str) and isinstance(right, str)) or left == right:
+        return None
+    if "".join(left.split()) != "".join(right.split()):
+        return "only letter case differs" if left.lower() == right.lower() else None
+    issues = []
+    lt, rt = (len(x) - len(x.rstrip("\n")) for x in (left, right))
+    if lt != rt:
+        issues.append(f"the left side ends with {lt} newline(s), the right with {rt}")
+    ll, rl = left.rstrip("\n").split("\n"), right.rstrip("\n").split("\n")
+    if ll != rl:
+        n, x, y = next(((i, x, y) for i, (x, y) in enumerate(zip(ll, rl), 1) if x != y),
+                       (min(len(ll), len(rl)) + 1, "", ""))
+        issues.append(f"spaces, indentation or blank lines inside the string, first at line "
+                      f"{n} of it: {x!r} vs {y!r}"[:240])
+    return "only whitespace differs: " + "; ".join(issues)
+
+
+def failure_hints(output: str) -> list[str]:
+    """One line per distinct whitespace/case pattern, with how many failures share it."""
+    counts: dict[str, int] = {}
+    for m in ASSERT_EQ_RE.finditer(output):
+        pair = _literal_pair(m.group(1).strip())
+        hint = pair and whitespace_hint(*pair)
+        if hint:
+            counts[hint] = counts.get(hint, 0) + 1
+    total = len(re.findall(r"^(?:FAIL|ERROR)[: ]", output, re.MULTILINE)) or None
+    return [f"NOTE: {n}{f' of {total}' if total else ''} failing assertion(s): {h}."
+            for h, n in counts.items()]
+
+
 def check_feedback(output: str, path: str, source: str, chars: int = 3500) -> str:
+    """Repair-prompt feedback: whitespace/case hints first (a cut must never drop them),
+    then the failures themselves."""
+    hints = "\n".join(failure_hints(output))
+    if not hints:
+        return _failures(output, path, source, chars)
+    return hints + "\n\n" + _failures(output, path, source, max(1000, chars - len(hints) - 2))
+
+
+def _failures(output: str, path: str, source: str, chars: int) -> str:
     """Check output for the repair prompt. A plain tail cut the first failure off whenever
     tracebacks were long, and the model then kept 'fixing' only the last one. Here every
     failure block gets an equal share, and frames in the target file are annotated with the
