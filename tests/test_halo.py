@@ -252,6 +252,34 @@ class TestCode(Base):
         self.assertIsNone(tasks.extract_code("Here is the code you asked for"))
         self.assertEqual(tasks.extract_code("Cause: off by one\nx = 1"), "x = 1\n")
 
+    def test_extract_code_rejects_lone_file_name_and_cut_off_block(self):
+        # seen in the long-file bench: a restart answered with just "cron.py" became the file
+        self.assertIsNone(tasks.extract_code("cron.py"))
+        self.assertIsNone(tasks.extract_code("Cause: x\n```python\ndef f():\n    return"))
+
+    def test_code_ctx_grows_for_long_files_within_cap(self):
+        self.assertEqual(tasks.code_ctx(self.cfg, 2000, 0), self.cfg.num_ctx)
+        self.assertEqual(tasks.code_ctx(self.cfg, 12000, 5000), 16384)
+        self.cfg.max_ctx = 12000
+        self.assertEqual(tasks.code_ctx(self.cfg, 90000, 90000), 12000)
+
+    def test_cut_off_reply_is_retried_with_bigger_context(self):
+        cut = {"response": "```python\ndef add(a, b):\n    ret", "done": True,
+               "done_reason": "length", "prompt_eval_count": 10, "eval_count": 10}
+        self.fake.replies = [cut, GOOD]
+        r = tasks.code(self.cfg, "add", "mod.py", CHECK, workdir=self.dir)
+        self.assertEqual((r["status"], r["attempts"]), ("passed", 1))
+        ctxs = [q["options"]["num_ctx"] for q in self.fake.requests]
+        self.assertEqual(ctxs, [self.cfg.num_ctx, self.cfg.num_ctx * 2])
+
+    def test_cut_off_at_cap_is_not_run_as_a_file(self):
+        self.cfg.max_ctx = self.cfg.num_ctx
+        cut = {"response": "x = (", "done": True, "done_reason": "length"}
+        self.fake.replies = [cut, GOOD]
+        r = tasks.code(self.cfg, "add", "mod.py", CHECK, workdir=self.dir)
+        self.assertEqual((r["status"], r["attempts"]), ("passed", 2))
+        self.assertIn("cut off", self.fake.requests[1]["prompt"])
+
     def test_repair_asks_for_cause_then_restarts_when_stuck(self):
         self.write("mod.py", "# original\n")
         self.fake.replies = [BAD, "Cause: sign\n" + BAD, GOOD]

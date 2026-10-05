@@ -306,3 +306,32 @@ with-halo first in 2.
 - Part of HALO's per-session overhead (tool schemas, ToolSearch) is paid in any session that
   has HALO attached, whether or not it delegates, so this per-task A/B is a conservative view
   of the marginal cost of one delegation.
+
+## Long single-file tasks (5 Oct 2026)
+
+`cron` (5-field cron parser + next run), `calc` (tokenizer + parser + evaluator with column
+errors) and `mdhtml` (Markdown subset → HTML): references 82–163 lines, the size where
+delegation should start to pay (previous section). `qwen3.6:35b-a3b-q4_K_M`, 3 attempts, no
+fallback, 3 tasks × 2 rounds per run.
+
+| run | passed | what the last failure looked like |
+|---|---|---|
+| before the fix (2 runs, 9 tasks) | 0/9 | truncated files, a file containing only `cron.py` / `mdhtml.py` |
+| after the fix | 0/6 | real logic bugs: cron 1/8 tests left (dom/dow OR rule), calc column numbers, mdhtml emphasis |
+
+Probing every Ollama call showed two HALO bugs, not model limits:
+- **Context overflow.** A repair round on `cron` used 6,249 prompt + 1,943 output tokens =
+  exactly `num_ctx` 8,192 (`done_reason: "length"`). The cut-off file was then run as if it
+  were complete. Fix: `halo_code` sizes the window once per run from spec + tests + draft
+  (rounded to a power of two, up to the new `max_ctx`, default 32,768; short tasks keep
+  8,192 so the model is not reloaded), and a cut-off reply is retried with a doubled window
+  instead of being run.
+- **Lone file name accepted as the file.** On a restart prompt the model sometimes answers just
+  `cron.py` (3 tokens); `extract_code` took that as the whole file. Bare paths and unclosed
+  fences are now rejected.
+
+The models write 2–4× the reference length (cron: ~3,800 output tokens for an 82-line
+reference), so the window has to reserve that. With both fixed, qwen3.6 still passes none of the
+long tasks in 3 attempts; what reaches the frontier on escalation is a near-miss draft
+(`.halo-draft`) rather than garbage. For files of this size the local tier does not save
+tokens on this machine yet (est. frontier tokens −14%, i.e. more than writing it directly).

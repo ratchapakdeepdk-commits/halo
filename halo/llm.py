@@ -36,6 +36,9 @@ class Usage:
         self.cloud_in = 0
         self.cloud_out = 0
         self.cloud_calls = 0
+        # Set by every local call: Ollama stopped because the context window was full
+        # (done_reason "length"), so the reply is cut off mid-way.
+        self.last_truncated = False
 
     @property
     def total(self) -> int:
@@ -219,6 +222,7 @@ def generate(cfg: Config, prompt: str, *, system: str = "", model: str | None = 
                     f"producing NaN/empty tokens on this prompt - try another model)")
         time.sleep(wait)
     if usage is not None:
+        usage.last_truncated = d.get("done_reason") == "length"
         usage.prompt_tokens += d.get("prompt_eval_count", 0)
         usage.output_tokens += d.get("eval_count", 0)
         usage.calls += 1

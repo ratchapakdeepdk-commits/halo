@@ -473,12 +473,32 @@ def digest(cfg: Config, question: str, paths: list[str] | None = None, text: str
 FENCE_RE = re.compile(r"```[^\n`]*\n(.*?)```", re.DOTALL)
 
 
+BARE_PATH_RE = re.compile(r"^[\w./\\-]+\.[A-Za-z0-9]{1,5}$")
+
+
+def code_ctx(cfg: Config, prompt_chars: int, draft_chars: int) -> int:
+    """Context window for one halo_code run, chosen once so Ollama does not reload the
+    model between rounds. A repair round holds the first prompt plus the previous draft plus
+    check output plus the new reply, so two replies are reserved; `draft_chars` is the expected
+    file size (the existing file, else the tests, which grow with it). Rounded up to a power
+    of two and kept within [num_ctx, max_ctx], so small tasks keep the configured window."""
+    out = max(2048, int(draft_chars / BUDGET_CHARS_PER_TOKEN * 2.5))  # models write ~2-4x the reference
+    need = int(prompt_chars / BUDGET_CHARS_PER_TOKEN) + 2 * out + RESERVE_TOKENS
+    ctx = cfg.num_ctx
+    while ctx < need and ctx < cfg.max_ctx:
+        ctx *= 2
+    return max(cfg.num_ctx, min(ctx, cfg.max_ctx))
+
+
 def extract_code(text: str) -> str | None:
     blocks = FENCE_RE.findall(text or "")
     if blocks:
         return max(blocks, key=len)
     stripped = CAUSE_RE.sub("", (text or "").strip(), count=1).strip()
-    # Unfenced reply: accept only if it does not look like prose.
+    # Unfenced reply: accept only if it does not look like prose, a lone file name (models
+    # sometimes answer a restart prompt with just "cron.py") or a cut-off fenced block.
+    if BARE_PATH_RE.match(stripped) or stripped.startswith("```"):
+        return None
     if stripped and not stripped.lower().startswith(("here", "sure", "i ", "the ")):
         return stripped + "\n"
     return None
@@ -596,6 +616,8 @@ def code(cfg: Config, spec: str, target: str, check: str, *, workdir: str = ".",
                        if m and m != model]
     current, last_out, attempts = original, "", 0
     status, reason, used = "failed", "", model
+    ctx = code_ctx(cfg, len(spec) + len(ctx_text) + len(original) + 600,
+                   max(len(original), len(ctx_text)))
     best = None  # (failure score, candidate, check output)
     for used in chain:
         current, feedback, restart, prev, rerolled = original, "", False, None, False
@@ -616,11 +638,18 @@ def code(cfg: Config, spec: str, target: str, check: str, *, workdir: str = ".",
                         feedback=feedback)
                 try:
                     reply = llm.generate(cfg, prompt, system=CODE_SYSTEM, model=used,
-                                         usage=usage, temperature=0.2 if attempt == 1 else
+                                         usage=usage, num_ctx=ctx,
+                                         temperature=0.2 if attempt == 1 else
                                          0.8 if restart else 0.5)
                 except llm.LocalModelError as e:
                     status, reason = "error", str(e)
                     break
+                # The context window filled up and the file was cut off mid-way: running the
+                # check on half a file only produces a confusing failure. Retry the same
+                # prompt with a bigger window (free, not an attempt) while the cap allows.
+                if usage.last_truncated and ctx < cfg.max_ctx:
+                    ctx, reply = min(ctx * 2, cfg.max_ctx), None
+                    continue
                 # Local models often answer a repair request with the unchanged file. Running
                 # the check again would only burn the attempt, so start over right away
                 # (once per model, so a model that always echoes cannot loop forever).
@@ -633,9 +662,12 @@ def code(cfg: Config, spec: str, target: str, check: str, *, workdir: str = ".",
             if esc:
                 status, reason = "escalated", esc
                 break
-            candidate = extract_code(reply)
+            candidate = extract_code(reply) if not usage.last_truncated else None
             if not candidate:
-                feedback = "Your reply did not contain a fenced code block with the file."
+                feedback = ("Your reply was cut off before the end of the file (output limit). "
+                            "Output only the complete file in one fenced code block, without "
+                            "explanations or long comments." if usage.last_truncated else
+                            "Your reply did not contain a fenced code block with the file.")
                 continue
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
             with open(path, "w", encoding="utf-8") as fh:

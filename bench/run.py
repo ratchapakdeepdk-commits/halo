@@ -46,7 +46,8 @@ def run_task(cfg, name: str, model: str | None, iters: int, fallback) -> dict:
             "cloud_tokens": rec.get("cloud_in", 0) + rec.get("cloud_out", 0),
             "frontier_direct_est": rec.get("frontier_direct_est", 0),
             "frontier_returned_est": rec.get("frontier_returned_est", 0),
-            "reason": res.get("reason", "")}
+            "reason": res.get("reason", ""),
+            "last_check_output": res.get("last_check_output", "")}
 
 
 def main():

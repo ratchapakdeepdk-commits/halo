@@ -22,6 +22,9 @@ class Config:
     bulk_model: str = ""
     bulk_chars: int = 50000
     num_ctx: int = 8192
+    # halo_code grows the context window up to this when the spec, tests and draft need it
+    # (a 150-line file plus its tests overflowed 8192 and the reply was cut mid-file).
+    max_ctx: int = 32768
     timeout: int = 300
     # Rough chars-per-token used only for budgeting and savings estimates.
     chars_per_token: float = 3.0
