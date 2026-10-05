@@ -75,7 +75,7 @@ def _walk(root: str):
             full = os.path.join(d, f)
             if (os.path.isfile(full) and not os.path.islink(full)
                     and not any(fnmatch.fnmatch(f, p) for p in SECRET_FILES)):
-                yield os.path.relpath(full, root)
+                yield os.path.relpath(full, root).replace(os.sep, "/")  # sector globs use /
 
 
 def _hash(path: str) -> str:
@@ -102,8 +102,12 @@ def copy_project(src: str, dst: str) -> str | None:
     for d, dirs, _ in os.walk(src):
         for x in list(dirs):
             if x in LINK_DIRS:
-                os.symlink(os.path.join(d, x),
-                           os.path.join(dst, os.path.relpath(os.path.join(d, x), src)))
+                try:
+                    os.symlink(os.path.join(d, x),
+                               os.path.join(dst, os.path.relpath(os.path.join(d, x), src)),
+                               target_is_directory=True)
+                except OSError:  # Windows without symlink rights: checks needing it fail
+                    pass
         dirs[:] = [x for x in dirs if not _skip(x) and x not in LINK_DIRS
                    and not os.path.islink(os.path.join(d, x))]
         for x in dirs:
@@ -121,7 +125,12 @@ def normalize_sector(sector: list[str], workdir: str) -> tuple[list[str], list[s
         s = s.strip()
         if not s:
             continue
-        rel = os.path.relpath(s, workdir) if os.path.isabs(s) else os.path.normpath(s)
+        try:
+            rel = os.path.relpath(s, workdir) if os.path.isabs(s) else os.path.normpath(s)
+        except ValueError:  # another drive on Windows
+            bad.append(s)
+            continue
+        rel = rel.replace(os.sep, "/")
         if rel == ".":
             ok.append(".")
         elif rel.startswith(".."):
