@@ -40,6 +40,11 @@ call that answers the question, plus one targeted check, is the cheap path.
    - Savings grow with file size: for a 10-line function just write it yourself.
 4. **Do it yourself**: design, multi-file changes, subtle debugging,
    security-sensitive code, anything a command cannot check.
+5. **Handing a chunk to another vendor** (only when the user asks, e.g. "let Codex do the
+   parser package"): `halo_handoff` with `task`, a narrow `sector` (dirs/globs it may change)
+   and a `check`. It runs that vendor's agent in a copy of the project on the user's plan for
+   that vendor and applies only in-sector changes. `passed` → review `git diff` of the sector;
+   `failed` → read `last_check_output`, fix or re-hand-off; `conflicts` → apply the patch by hand.
 
 ## Trust rules
 
@@ -48,4 +53,5 @@ call that answers the question, plus one targeted check, is the cheap path.
   code that ran or from the source material.
 - If the local model escalates, that is the system working — take over.
 
-`halo_stats` shows delegated tasks and estimated tokens saved.
+`halo_stats` shows delegated tasks and estimated tokens saved. `halo_council` asks other vendors
+for a second opinion (no file changes).

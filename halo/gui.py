@@ -59,6 +59,14 @@ def _council_choices(installed: list[str]) -> list[str]:
     return list(llm.CLI_WORKERS) + installed
 
 
+HANDOFF_AGENTS = ("codex", "claude", "claude:haiku", "claude:sonnet", "gemini")
+
+
+def _recent_handoffs(records: list[dict], n: int = 6) -> list[dict]:
+    keep = ("ts", "status", "model", "seconds", "cloud_in", "cloud_out", "rounds")
+    return [{k: r.get(k) for k in keep} for r in records if r.get("kind") == "handoff"][-n:][::-1]
+
+
 def status() -> dict:
     cfg = config.load()
     try:
@@ -67,7 +75,8 @@ def status() -> dict:
         ollama = True
     except llm.LocalModelError:
         installed, ollama = [], False
-    s = ledger.summary(ledger.read())
+    records = ledger.read()
+    s = ledger.summary(records)
     t = s["total"]
     hw = doctor.accelerator()
     cpu = hw["kind"] == "cpu"
@@ -89,6 +98,8 @@ def status() -> dict:
                    for n, a in integration.status()["agents"].items()],
         "council": {"members": tasks.council_models(cfg),
                     "choices": _council_choices(installed)},
+        "handoff": {"agent": cfg.handoff_agent, "rounds": cfg.handoff_rounds,
+                    "choices": list(HANDOFF_AGENTS), "recent": _recent_handoffs(records)},
         "stats": {"tasks": t.get("tasks", 0), "ok": t.get("ok", 0) + t.get("passed", 0),
                   "local_tokens": t.get("local_in", 0) + t.get("local_out", 0),
                   "saved_upper_bound": s["frontier_saved_est"]},
@@ -213,6 +224,15 @@ class Handler(BaseHTTPRequestHandler):
             cfg.council_models = members
             config.save(cfg)
             self._send(status())
+        elif self.path == "/api/handoff":
+            cfg = config.load()
+            agent, rounds = body.get("agent"), body.get("rounds")
+            if agent not in HANDOFF_AGENTS or not isinstance(rounds, int) or not 1 <= rounds <= 5:
+                self._send({"error": "pick an agent and 1-5 rounds"}, code=400)
+                return
+            cfg.handoff_agent, cfg.handoff_rounds = agent, rounds
+            config.save(cfg)
+            self._send(status())
         elif self.path == "/api/pull":
             allowed = {m.name for m in catalog.CATALOG}
             names = [n for n in body.get("names", []) if n in allowed]
@@ -303,11 +323,20 @@ max-height:260px;overflow:auto;white-space:pre-wrap;margin:10px 0 0}
  </section>
  <section class="card"><h2>Local model server</h2><div id="sys"></div></section>
  <section class="card"><h2>Agents</h2><div id="agents"></div>
-  <p class="note">Add = the agent gets HALO's tools (local delegation in Hybrid, the council in both modes). Takes effect in new sessions.</p></section>
+  <p class="note">Add = the agent gets HALO's tools (local delegation in Hybrid; council and handoff in both modes). Takes effect in new sessions.</p></section>
  <section class="card wide"><h2>Council (frontier + frontier)</h2>
   <p class="note" style="margin:0 0 8px">Who answers when an agent asks the council (halo_council / <code>halo council</code>) for a second opinion. In Frontier only mode local models are skipped.</p>
   <div id="council"></div>
   <div class="btns"><button class="btn primary" onclick="saveCouncil()">Save council</button></div>
+ </section>
+ <section class="card wide"><h2>Handoff (frontier → frontier)</h2>
+  <p class="note" style="margin:0 0 8px">Who takes a whole sub-task when an agent hands one over (halo_handoff / <code>halo handoff</code>). It works in a copy of the project on its own plan's quota; only changes inside the given sector come back. Secrets (.env, keys) are not sent; the rest of the project is.</p>
+  <div class="sel3">
+   <div><label for="h-agent">Default agent</label><select id="h-agent"></select></div>
+   <div><label for="h-rounds">Repair rounds</label><select id="h-rounds"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></div>
+  </div>
+  <div class="btns"><button class="btn primary" onclick="saveHandoff()">Save handoff</button></div>
+  <div id="handoffs"></div>
  </section>
  <section class="card wide"><h2>Savings</h2><div class="stat" id="stats"></div>
   <p class="note">Local tokens are measured. The frontier figure is an upper bound (it assumes the frontier would have read the whole input).</p></section>
@@ -358,6 +387,15 @@ function render(s){S=s;$("ver").textContent="v"+s.version;
   const nl=local.filter(m=>s.council.members.includes(m)).length;
   $("council").innerHTML=cloud.map(box).join("")+(s.mode==="frontier"||!local.length?"":
    `<details ${nl?"open":""}><summary class="sub" style="cursor:pointer;padding:6px 0">Local models (${nl} chosen, Hybrid only)</summary>${local.map(box).join("")}</details>`)}
+ const hf=s.handoff,instA=new Set(s.agents.filter(a=>a.cli).map(a=>a.name));
+ if(!document.activeElement||!["h-agent","h-rounds"].includes(document.activeElement.id)){
+  $("h-agent").innerHTML=hf.choices.map(m=>{const ok=instA.has(m.split(":")[0]);
+   return `<option value="${esc(m)}" ${m===hf.agent?"selected":""} ${ok?"":"disabled"}>${esc(m)}${ok?"":" (not installed)"}</option>`}).join("");
+  $("h-rounds").value=String(hf.rounds)}
+ $("handoffs").innerHTML=hf.recent.length?`<p class="sub" style="margin:10px 0 4px">Recent handoffs</p>`+hf.recent.map(r=>
+  row(`${dot(r.status==="passed"||r.status==="done")}${new Date(r.ts*1000).toLocaleString()} · ${esc(r.model)}`,
+   `${esc(r.status)} · ${r.rounds??"?"} round(s) · ${Math.round(r.seconds)}s · ${Number((r.cloud_in||0)+(r.cloud_out||0)).toLocaleString()} tok on its plan`)).join("")
+  :`<p class="sub" style="margin:10px 0 0">No handoffs yet.</p>`;
  const st=s.stats,n=x=>Number(x).toLocaleString();
  $("stats").innerHTML=`<div><div class="big">${n(st.tasks)}</div><span>tasks delegated (${n(st.ok)} ok)</span></div>
   <div><div class="big">${n(st.local_tokens)}</div><span>local tokens (free)</span></div>
@@ -384,6 +422,8 @@ async function saveModels(){const fb=$("s-fb").value;render(await post("/api/mod
 async function agent(name,action){const r=await post("/api/agent",{name,action});if(r.error)alert(r.error);else render(r)}
 async function saveCouncil(){const members=[...document.querySelectorAll("#council input:checked")].map(b=>b.value);
  const r=await post("/api/council",{members});if(r.error)alert(r.error);else{councilDirty=false;render(r)}}
+async function saveHandoff(){const r=await post("/api/handoff",{agent:$("h-agent").value,rounds:Number($("h-rounds").value)});
+ if(r.error)alert(r.error);else render(r)}
 async function job(name){await post("/api/"+name);refresh()}
 $("council").addEventListener("change",()=>councilDirty=true);
 render(__INIT__);setInterval(refresh,2500);

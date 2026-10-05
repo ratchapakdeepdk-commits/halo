@@ -212,6 +212,15 @@ class TestAgentChoice(Env):
             with self.assertRaises(urllib.error.HTTPError) as e:
                 post("/api/agent", {"name": "rm -rf", "action": "add"})
             self.assertEqual(e.exception.code, 400)
+
+            self.assertEqual((st["handoff"]["agent"], st["handoff"]["rounds"]), ("codex", 2))
+            st = post("/api/handoff", {"agent": "claude:haiku", "rounds": 3})
+            self.assertEqual((st["handoff"]["agent"], st["handoff"]["rounds"]), ("claude:haiku", 3))
+            self.assertEqual(config.load().handoff_agent, "claude:haiku")
+            for bad in ({"agent": "sh -c x", "rounds": 2}, {"agent": "codex", "rounds": 99}):
+                with self.assertRaises(urllib.error.HTTPError) as e:
+                    post("/api/handoff", bad)
+                self.assertEqual(e.exception.code, 400)
         finally:
             srv.shutdown()
             srv.server_close()
