@@ -359,7 +359,7 @@ different bug each time: one feedback trick does not move the pass rate.
 ## HFF handoff: Claude hands a multi-file job to Codex (5 Oct 2026)
 
 `bench/e2e.sh handoff bench/handoff/txledger`: a package of three modules (parser with error
-line numbers, ledger with balances and errors, reports with CSV output; reference 146 lines)
+line numbers, ledger with balances and errors, reports with CSV output; reference 111 lines)
 against 9 tests. Both arms are Claude Code with Sonnet. The baseline does the job itself; the
 HALO arm is told to hand it to `codex` with `halo_handoff` (sector `txledger`, the test command
 as check). Four pairs: random order came out HALO-first three times, so the fourth was pinned
