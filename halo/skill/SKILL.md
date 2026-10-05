@@ -43,8 +43,11 @@ call that answers the question, plus one targeted check, is the cheap path.
 5. **Handing a chunk to another vendor** (only when the user asks, e.g. "let Codex do the
    parser package"): `halo_handoff` with `task`, a narrow `sector` (dirs/globs it may change)
    and a `check`. It runs that vendor's agent in a copy of the project on the user's plan for
-   that vendor and applies only in-sector changes. `passed` → review `git diff` of the sector;
-   `failed` → read `last_check_output`, fix or re-hand-off; `conflicts` → apply the patch by hand.
+   that vendor and applies only in-sector changes. `passed` → review the inline `diff` for
+   what the tests miss (empty inputs, loose parsing, rounding) - measured reviews found real
+   bugs every time; `failed` → read `last_check_output`, fix or re-hand-off; `conflicts` →
+   apply the patch by hand. Measured: ~110 lines of new code = break-even, ~175 lines = -29%
+   Claude cost including the review.
 
 ## Trust rules
 

@@ -43,7 +43,8 @@ This machine has a free local model behind the `halo` MCP tools. Work hybrid in 
   the saving is on longer files.
 - Keep design, multi-file changes, subtle debugging and security-sensitive code yourself.
 - When the user asks to hand work to another agent or vendor (Codex/GPT, Gemini, Claude), use
-  `halo_handoff` with a narrow `sector` and a check; review its diff before building on it.
+  `halo_handoff` with a narrow `sector` and a check, then review the diff it returns (it finds
+  real bugs). Pays off from ~150 lines of new code; smaller jobs cost about the same either way.
   Not on your own initiative: it sends the project (minus secrets) to that vendor.
 - If HALO says a path is outside the allowed directories, just do that step yourself.
 {END}
