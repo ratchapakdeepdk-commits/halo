@@ -355,3 +355,32 @@ failures was whitespace-only, so the hint matched nothing in them. This run's `m
 failed on emphasis logic instead. Prompts are not logged, so whether the hint fired in an
 intermediate round is unknown. Drafts differ from run to run, and these long tasks fail on a
 different bug each time: one feedback trick does not move the pass rate.
+
+## HFF handoff: Claude hands a multi-file job to Codex (5 Oct 2026)
+
+`bench/e2e.sh handoff bench/handoff/txledger`: a package of three modules (parser with error
+line numbers, ledger with balances and errors, reports with CSV output; reference 146 lines)
+against 9 tests. Both arms are Claude Code with Sonnet. The baseline does the job itself; the
+HALO arm is told to hand it to `codex` with `halo_handoff` (sector `txledger`, the test command
+as check). Four pairs: random order came out HALO-first three times, so the fourth was pinned
+baseline-first.
+
+| pair (order) | baseline cost | baseline output tok / turns | HALO cost | HALO output tok / turns | Codex side (in / out, time) |
+|---|---|---|---|---|---|
+| 1 (HALO first) | $0.1294 | 3,836 / 7 | $0.0627 | 653 / 4 | 92.7k / 2.5k, 92 s |
+| 2 (HALO first) | $0.0904 | 3,571 / 7 | $0.0624 | 622 / 4 | 106.1k / 3.4k, 84 s |
+| 3 (HALO first) | $0.0880 | 3,890 / 8 | $0.0621 | 598 / 4 | 96.5k / 3.8k, 88 s |
+| 4 (baseline first) | $0.0887 | 3,751 / 7 | $0.0621 | 619 / 4 | 93.6k / 2.8k, 77 s |
+| **total** | **$0.3965** | **15,048** | **$0.2493** | **2,492** | Codex passed 4/4 in one round |
+
+- All 8 runs passed the tests. Claude's cost fell 37% ($0.250 vs $0.397); excluding pair 1,
+  where the baseline wrote an unusually large cache, it fell 30%. Output tokens fell 83%.
+- The HALO arm's cost is almost constant ($0.0621-0.0627): one ToolSearch, one handoff, one
+  test re-run. That is the fixed price of a handoff on the Claude side, so the saving grows with
+  the size of the job. A job Claude finishes for under ~$0.06 is not worth handing off.
+- The work moved to the user's ChatGPT plan: ~97k Codex input tokens (mostly cached) and ~3k
+  output per job, 77-92 s each. This is quota sharing, not a free lunch: it pays off when
+  Claude's quota is the scarce one.
+- Caveat: in the HALO arm Claude only re-ran the tests and did not read the code (it said so
+  in its answer). Code quality beyond the tests was not compared. One task, one controller model.
+

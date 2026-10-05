@@ -1,0 +1,3 @@
+{"sector": ["txledger"],
+ "check": "python3 -m unittest discover -q -s tests -t .",
+ "task": "Implement the txledger package so the tests in tests/ pass (do not edit tests): txledger/parse.py (parse_line, parse_file), txledger/accounts.py (Ledger with apply/balance/history and the error classes), txledger/report.py (monthly_totals, top_payees, to_csv). The tests are the spec."}

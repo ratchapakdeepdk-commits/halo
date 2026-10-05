@@ -4,6 +4,8 @@
 #
 #   bench/e2e.sh digest /path/to/big.log      "What errors occurred, how often, last restart?"
 #   bench/e2e.sh code   bench/tasks/semver
+#   bench/e2e.sh handoff bench/handoff/txledger      # HFF: baseline does it, HALO arm hands it
+#                                                    # to HALO_E2E_AGENT (default codex)
 #
 # Prints tool calls, input/output tokens, cache reads, turns and total cost for both arms.
 # Arm order is random by default (prompt-cache state alone moves a run's cost by ~30%, so a
@@ -74,6 +76,26 @@ case "$kind" in
       echo "  tests: $(cd "$out/$a" && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q test_task 2>&1 | tail -1)"
     done
     ;;
-  *) echo "usage: $0 digest|code <target> [question]"; exit 2;;
+  handoff)
+    proj=$(realpath "$target")
+    agent=${HALO_E2E_AGENT:-codex}
+    field() { python3 -c "import json,sys;v=json.load(open('$proj/task.json'))[sys.argv[1]];print(v if isinstance(v,str) else '\", \"'.join(v))" "$1"; }
+    task=$(field task); sector=$(field sector); check=$(field check)
+    tools="Read,Write,Edit,Glob,Grep,Bash(python3:*),Bash(python:*)"
+    for a in "${arms[@]}"; do
+      mkdir -p "$out/$a"; cp -r "$proj"/. "$out/$a/"; rm "$out/$a/task.json"
+      if [ $a = with-halo ]; then
+        arm $a "$halo_cfg" "mcp__halo__halo_handoff,$tools" "$out/$a" \
+          "$task Hand this whole job to $agent with halo_handoff (agent \"$agent\", sector [\"$sector\"], check \"$check\"), then check the result. Be brief when done."
+      else arm $a "$none_cfg" "$tools" "$out/$a" "$task Check: $check. Be brief when done."; fi
+      echo "  tests: $(cd "$out/$a" && PYTHONDONTWRITEBYTECODE=1 $check 2>&1 | tail -1)"
+      [ $a = with-halo ] && python3 -c "
+import json, os
+r = [json.loads(l) for l in open(os.path.expanduser('~/.local/share/halo/ledger.jsonl'))]
+h = [x for x in r if x['kind'] == 'handoff'][-1]
+print(f\"  {h['model']} side: in={h['cloud_in']} out={h['cloud_out']} rounds={h.get('rounds')} {h['status']} {h['seconds']}s\")"
+    done
+    ;;
+  *) echo "usage: $0 digest|code|handoff <target> [question]"; exit 2;;
 esac
 echo "raw transcripts: $out"

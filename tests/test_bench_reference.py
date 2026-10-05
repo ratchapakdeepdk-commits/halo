@@ -27,6 +27,25 @@ class BenchReferenceTest(unittest.TestCase):
                 finally:
                     shutil.rmtree(work, ignore_errors=True)
 
+    def test_handoff_references_pass(self):
+        # bench/handoff/<name>: a project with tests/; reference package in reference/handoff-<name>
+        root = os.path.join(BENCH, "handoff")
+        for name in sorted(os.listdir(root)):
+            with self.subTest(task=name):
+                work = tempfile.mkdtemp()
+                try:
+                    shutil.copytree(os.path.join(root, name, "tests"), os.path.join(work, "tests"))
+                    ref = os.path.join(BENCH, "reference", "handoff-" + name)
+                    for pkg in os.listdir(ref):
+                        shutil.copytree(os.path.join(ref, pkg), os.path.join(work, pkg))
+                    r = subprocess.run([sys.executable, "-m", "unittest", "discover", "-q",
+                                        "-s", "tests", "-t", "."],
+                                       cwd=work, capture_output=True, text=True, timeout=60)
+                    self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+                    self.assertNotIn("Ran 0 tests", r.stderr)
+                finally:
+                    shutil.rmtree(work, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()
