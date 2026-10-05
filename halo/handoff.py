@@ -36,7 +36,7 @@ MAX_FILES = 5000
 MAX_BYTES = 200 * 1024 * 1024
 # diff_mode "auto": the diff comes back inline when it is at most this long, so the agent in
 # charge can review the work in the same turn instead of opening every file (more turns).
-AUTO_DIFF_CHARS = 8000
+AUTO_DIFF_CHARS = 16000
 MAX_TEXT = 2 * 1024 * 1024  # larger files are compared by hash but never diffed
 
 AGENT_RULES = """You are working on a task handed over by another AI agent through HALO.

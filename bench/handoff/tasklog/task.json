@@ -1,0 +1,3 @@
+{"sector": ["tasklog"],
+ "check": "python3 -m unittest discover -q -s tests -t .",
+ "task": "Implement the tasklog package so the tests in tests/ pass (do not edit tests): tasklog/model.py (Entry), tasklog/parse.py (parse_line, parse_text, ParseError, find_overlaps), tasklog/query.py (select, totals, weekly), tasklog/invoice.py (Rates, invoice, InvoiceLine), tasklog/render.py (table, to_csv, to_markdown). The tests are the spec."}

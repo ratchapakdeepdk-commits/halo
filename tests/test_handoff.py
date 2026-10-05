@@ -139,7 +139,7 @@ class TestHandoff(Base):
     def test_small_diff_inline_large_diff_omitted(self):
         r = self.run_rounds([{"write": {"src/x.py": GOOD}}])
         self.assertIn("+    return 2", r["diff"])
-        big = GOOD + "".join(f"# filler line {i} " + "x" * 60 + "\n" for i in range(200))
+        big = GOOD + "".join(f"# filler line {i} " + "x" * 60 + "\n" for i in range(400))
         r = self.run_rounds([{"write": {"src/x.py": big}}])
         self.assertNotIn("diff", r)
         self.assertIn("full_diff", r["diff_omitted"])

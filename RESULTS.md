@@ -419,3 +419,26 @@ depends on things the tests do not cover, the review the agent in charge has to 
 the saving on jobs of this size. Whether the saving returns on larger jobs (review is mostly
 reading, which costs ~1/5 of writing) is the next thing to measure.
 
+### A larger job: `tasklog` (6 Oct 2026)
+
+`bench/handoff/tasklog`: five modules (entry model, parser with overlap detection, queries by
+project/tag/ISO week, invoices rounded up to 15-minute blocks, text/CSV/Markdown rendering;
+reference 174 lines) against 11 tests. Same setup, with the review prompt; the inline diff limit
+was raised to 16k chars so the diff (~10k) came back inline every time. Three pairs; the last
+two baseline-first.
+
+| pair (order) | baseline cost / output tok / turns | HALO cost / output tok / turns | Codex side |
+|---|---|---|---|
+| 1 (HALO first) | $0.1407 / 6,247 / 10 | $0.0884 / 1,257 / 5 | 114.3k / 4.5k, 110 s |
+| 2 (baseline first) | $0.1356 / 6,130 / 9 | $0.0984 / 1,784 / 4 | 184.2k / 6.7k, 170 s |
+| 3 (baseline first) | $0.1322 / 5,906 / 9 | $0.1048 / 1,646 / 5 | 168.5k / 5.4k, 131 s |
+| **total** | **$0.4085 / 18,283** | **$0.2916 / 4,687** | 3/3 passed in one round |
+
+- With the review included, Claude's cost fell 29% and its output tokens 74%; all 6 runs passed.
+  At 111 lines the same setup broke even (+6%), so for this kind of job the crossover sits
+  between ~110 and ~175 lines of code. The baseline cost grows with the code it writes; the
+  HALO arm grows only with the diff it reads.
+- Each review found real bugs the tests miss in Codex's code: `table([])` crashing on an empty
+  list (twice), and invoice amounts computed from hours already rounded to 0.01. The review is
+  part of the price of handing off, not an optional extra.
+

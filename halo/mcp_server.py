@@ -142,7 +142,7 @@ TOOLS = [
                 "rounds": {"type": "integer", "description": "Attempts at the check (default 2)."},
                 "full_diff": {"type": "boolean",
                               "description": "true = always return the diff, false = never. "
-                                             "Default: returned when small (~8k chars)."},
+                                             "Default: returned when small (~16k chars)."},
             },
             "required": ["task", "sector"],
         },
