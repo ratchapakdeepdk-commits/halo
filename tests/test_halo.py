@@ -257,6 +257,15 @@ class TestCode(Base):
         self.assertIsNone(tasks.extract_code("cron.py"))
         self.assertIsNone(tasks.extract_code("Cause: x\n```python\ndef f():\n    return"))
 
+    def test_extract_code_keeps_backticks_inside_the_file(self):
+        # seen in the mdhtml bench: `s.startswith("```")` closed the block, so every Markdown
+        # renderer the model wrote was cut at its first fence check
+        src = ('def is_fence(s):\n    return s.startswith("```")\n\n'
+               'DOC = """\n```\nnot a closing fence: shorter than the opener\n```\n"""\n')
+        self.assertEqual(tasks.extract_code("Cause: x\n````python\n" + src + "````\n"), src)
+        self.assertEqual(tasks.extract_code("```python\n" + src.split("\n\n")[0] + "\n```"),
+                         'def is_fence(s):\n    return s.startswith("```")\n')
+
     def test_code_ctx_grows_for_long_files_within_cap(self):
         self.assertEqual(tasks.code_ctx(self.cfg, 2000, 0), self.cfg.num_ctx)
         self.assertEqual(tasks.code_ctx(self.cfg, 12000, 5000), 16384)

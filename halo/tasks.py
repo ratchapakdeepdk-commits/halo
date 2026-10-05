@@ -470,7 +470,28 @@ def digest(cfg: Config, question: str, paths: list[str] | None = None, text: str
 
 # ---------------------------------------------------------------- code
 
-FENCE_RE = re.compile(r"```[^\n`]*\n(.*?)```", re.DOTALL)
+# Fences count only on their own line (CommonMark): code that handles Markdown is full of
+# "```" inside strings, and closing at the first one cut every Markdown renderer in half.
+FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,})[^`\n]*$")
+FENCE_CLOSE_RE = re.compile(r"^ {0,3}(`{3,})\s*$")
+
+
+def fenced_blocks(text: str) -> list[str]:
+    """Closed fenced blocks in `text`; a closing fence is at least as long as its opener."""
+    blocks, opener, body = [], None, []
+    for line in (text or "").splitlines():
+        if opener is None:
+            m = FENCE_OPEN_RE.match(line)
+            if m:
+                opener, body = len(m.group(1)), []
+        else:
+            m = FENCE_CLOSE_RE.match(line)
+            if m and len(m.group(1)) >= opener:
+                blocks.append("".join(b + "\n" for b in body))
+                opener = None
+            else:
+                body.append(line)
+    return blocks
 
 
 BARE_PATH_RE = re.compile(r"^[\w./\\-]+\.[A-Za-z0-9]{1,5}$")
@@ -491,7 +512,7 @@ def code_ctx(cfg: Config, prompt_chars: int, draft_chars: int) -> int:
 
 
 def extract_code(text: str) -> str | None:
-    blocks = FENCE_RE.findall(text or "")
+    blocks = fenced_blocks(text)
     if blocks:
         return max(blocks, key=len)
     stripped = CAUSE_RE.sub("", (text or "").strip(), count=1).strip()

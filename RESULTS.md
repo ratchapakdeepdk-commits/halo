@@ -318,6 +318,7 @@ fallback, 3 tasks × 2 rounds per run.
 |---|---|---|
 | before the fix (2 runs, 9 tasks) | 0/9 | truncated files, a file containing only `cron.py` / `mdhtml.py` |
 | after the fix | 0/6 | real logic bugs: cron 1/8 tests left (dom/dow OR rule), calc column numbers, mdhtml emphasis |
+| after the fence fix (below) | 0/6 | cron 1 test left (dom/dow OR, year rollover), calc error columns, mdhtml a trailing `\n` failing all 8 |
 
 Probing every Ollama call showed two HALO bugs, not model limits:
 - **Context overflow.** A repair round on `cron` used 6,249 prompt + 1,943 output tokens =
@@ -335,3 +336,11 @@ reference), so the window has to reserve that. With both fixed, qwen3.6 still pa
 long tasks in 3 attempts; what reaches the frontier on escalation is a near-miss draft
 (`.halo-draft`) rather than garbage. For files of this size the local tier does not save
 tokens on this machine yet (est. frontier tokens −14%, i.e. more than writing it directly).
+
+A third HALO bug turned up afterwards: `extract_code` closed a fenced block at the first
+```` ``` ```` anywhere, including inside a string. Code that handles Markdown is full of
+`s.startswith("```")`, so every `mdhtml` draft was cut in half before it ran (the reference
+itself extracts as 42 of its 102 lines). Fences now count only on their own line, and a
+closing fence must be at least as long as its opener (CommonMark). Rerun: still 0/6, but
+`mdhtml` drafts now run all their tests, and one trailing newline is all that separates them
+from passing. All six failures are now model mistakes, not HALO bugs.
