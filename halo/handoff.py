@@ -17,10 +17,11 @@ import hashlib
 import json
 import os
 import shutil
+import sys
 import tempfile
 import time
 
-from . import llm, tasks
+from . import llm, tasks, vendors
 from .config import Config, DATA_DIR
 
 # Not copied: VCS data, caches and dependency trees. Dependency trees are linked instead so
@@ -190,10 +191,10 @@ def handoff(cfg: Config, task: str, sector: list[str], *, workdir: str = ".",
     workdir = os.path.realpath(os.path.expanduser(workdir))
     if not os.path.isdir(workdir):
         return {"status": "error", "error": f"workdir {workdir} is not a directory"}
-    if not llm.is_cloud(agent):
+    if not llm.is_cloud(agent, cfg):
         return {"status": "error",
                 "error": f"{agent} is not a vendor agent: use one of "
-                         f"{', '.join(llm.CLI_WORKERS)} (optionally :model) "
+                         f"{', '.join(vendors.names(cfg))} (optionally :model) "
                          f"(local models take single files through halo_code)"}
     sector, bad = normalize_sector(sector or [], workdir)
     if bad or not sector:
@@ -299,3 +300,60 @@ def handoff(cfg: Config, task: str, sector: list[str], *, workdir: str = ".",
                       t0, {"rounds": done})
     result["seconds"] = round(time.time() - t0, 1)
     return result
+
+
+PROBE_CODE = "def add(a, b):\n    return a - b\n\n\ndef mul(a, b):\n    return a + b\n"
+PROBE_TEST = """import unittest
+
+from calc import add, mul
+
+
+class T(unittest.TestCase):
+    def test_add(self):
+        self.assertEqual(add(2, 3), 5)
+
+    def test_mul(self):
+        self.assertEqual(mul(4, 5), 20)
+
+
+if __name__ == "__main__":
+    unittest.main()
+"""
+
+
+def probe(cfg: Config, model: str, *, agent: bool = True) -> dict:
+    """Try a vendor before trusting it: one tiny worker question, then (when it has an agent
+    command) a toy handoff whose check must pass. For `halo workers test`."""
+    v, _ = vendors.split(model, cfg)
+    if not v:
+        return {"status": "error", "error": f"{model} is not a worker: one of "
+                                            f"{', '.join(vendors.names(cfg))}"}
+    steps = {}
+    if v.worker:
+        t0 = time.time()
+        usage = llm.Usage()
+        try:
+            ans = llm.generate(cfg, "Reply with exactly one word: pong", model=model, usage=usage)
+            ok = "pong" in ans.lower()
+            steps["worker"] = {"ok": ok, "answer": ans[:200],
+                               "tokens": usage.cloud_in + usage.cloud_out}
+        except llm.LocalModelError as e:
+            steps["worker"] = {"ok": False, "error": str(e)}
+        steps["worker"]["seconds"] = round(time.time() - t0, 1)
+    if v.agent and agent:
+        with tempfile.TemporaryDirectory(prefix="halo-probe-") as proj:
+            for name, text in (("calc.py", PROBE_CODE), ("test_calc.py", PROBE_TEST)):
+                with open(os.path.join(proj, name), "w", encoding="utf-8") as fh:
+                    fh.write(text)
+            r = handoff(cfg, "Fix the bugs in calc.py so that add() and mul() are correct.",
+                        ["calc.py"], workdir=proj, agent=model, rounds=1,
+                        check=f'"{sys.executable}" -m unittest -q test_calc')
+            with open(os.path.join(proj, "test_calc.py"), encoding="utf-8") as fh:
+                tests_kept = fh.read() == PROBE_TEST
+        steps["agent"] = {"ok": r.get("status") == "passed" and tests_kept,
+                          "status": r.get("status"), "seconds": r.get("seconds"),
+                          **({"reason": r.get("reason") or r.get("error")}
+                             if r.get("status") != "passed" else {}),
+                          **({} if tests_kept else {"error": "the test file was changed"})}
+    ok = bool(steps) and all(s["ok"] for s in steps.values())
+    return {"status": "passed" if ok else "failed", "worker": model, "steps": steps}

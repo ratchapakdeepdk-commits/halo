@@ -10,7 +10,7 @@ import sys
 import time
 
 from . import (__version__, catalog, config, doctor, handoff, integration, ledger, llm,
-               router, tasks)
+               router, tasks, vendors)
 
 
 
@@ -289,9 +289,9 @@ def cmd_setup(a, cfg):
             from . import tune
             config.save(cfg)
             tune.run(cfg, models=chosen)
-    bad = [w for w in (a.worker or []) if not llm.is_cloud(w)]
+    bad = [w for w in (a.worker or []) if not llm.is_cloud(w, cfg)]
     if bad:
-        print(f"--worker must be one of {', '.join(llm.CLI_WORKERS)} (optionally :model): {bad}")
+        print(f"--worker must be one of {', '.join(vendors.names(cfg))} (optionally :model): {bad}")
         return 2
     workers = [w for w in (a.worker or []) if w not in cfg.fallback_models]
     if workers:
@@ -345,6 +345,103 @@ def cmd_agents(a, cfg):
               f"uses HALO: {'yes' if s['enabled'] else 'no ':<4} rule: {'yes' if s['rule_installed'] else 'no'}")
     print("\nworker chain for code: "
           + " → ".join([cfg.code_model or cfg.model, *cfg.fallback_models]))
+    return 0
+
+
+WORKER_WARNING = """\
+  ! HALO cannot sandbox a worker you add. Whatever its CLI's own permissions allow runs as
+    you, inside a scratch copy of the project (secrets left out). Only files inside the
+    sector come back, and only after the check passes - but the CLI itself can still read
+    your home directory or use the network if it is allowed to."""
+
+
+def _load_spec(text: str) -> dict:
+    if text.startswith("@"):
+        with open(os.path.expanduser(text[1:]), encoding="utf-8") as fh:
+            text = fh.read()
+    return json.loads(text)
+
+
+def cmd_workers(a, cfg):
+    if a.action in (None, "list"):
+        for s in vendors.status(cfg):
+            roles = "+".join(r for r in ("worker", "agent") if s[r])
+            print(f"  {s['name']:<10} {'yours' if s['custom'] else 'built in':<9} "
+                  f"{'installed' if s['installed'] else 'not found':<10} {roles:<13} {s['label']}")
+        for p in vendors.problems(cfg):
+            print(f"  ✗ ignored: {p}")
+        print("\nadd one: halo workers add opencode   (presets: "
+              + ", ".join(vendors.PRESETS) + ")\n"
+              "     or: halo workers add NAME --spec '{\"worker\": [...], ...}' (see vendors.py)")
+        return 0
+    if not a.name:
+        print(f"halo workers {a.action}: name a worker", file=sys.stderr)
+        return 2
+    name = a.name
+    if a.action == "remove":
+        if name not in cfg.custom_workers:
+            print(f"{name} is not one of your workers", file=sys.stderr)
+            return 2
+        del cfg.custom_workers[name]
+        mine = lambda m: m.partition(":")[0] == name  # noqa: E731
+        cfg.fallback_models = [m for m in cfg.fallback_models if not mine(m)]
+        cfg.council_models = [m for m in cfg.council_models if not mine(m)]
+        if mine(cfg.handoff_agent):
+            cfg.handoff_agent = config.Config.handoff_agent
+        config.save(cfg)
+        print(f"  ✓ removed {name} (and from fallback/council/handoff where it was used)")
+        return 0
+    if a.action == "test":
+        print(f"testing {name}: a one-word question, then a toy handoff (2 bugs, check must pass)")
+        r = handoff.probe(cfg, name, agent=not a.no_agent)
+        if r["status"] == "error":
+            print(f"  ✗ {r['error']}", file=sys.stderr)
+            return 2
+        for step, s in r["steps"].items():
+            detail = s.get("error") or s.get("reason") or s.get("answer") or s.get("status") or ""
+            print(f"  {'✓' if s['ok'] else '✗'} {step:<6} {s.get('seconds', '?')}s  {detail}"[:300])
+        if r["status"] == "passed":
+            print(f"\n{name} works. Use it: halo handoff -a {name} ... | fallback/council in "
+                  f"the config | handoff_agent: \"{name}\"")
+        return 0 if r["status"] == "passed" else 1
+
+    # add
+    if name in vendors.BUILTIN:
+        print(f"{name} is built in already", file=sys.stderr)
+        return 2
+    try:
+        spec = _load_spec(a.spec) if a.spec else json.loads(json.dumps(vendors.PRESETS[name]))
+    except KeyError:
+        print(f"no preset for {name}: give its commands with --spec (presets: "
+              f"{', '.join(vendors.PRESETS)})", file=sys.stderr)
+        return 2
+    except (OSError, ValueError) as e:
+        print(f"--spec: {e}", file=sys.stderr)
+        return 2
+    exe = a.bin or spec.get("bin") or shutil.which(name)
+    if exe:
+        spec["bin"] = os.path.abspath(os.path.expanduser(exe)) if os.sep in exe else (
+            shutil.which(exe) or exe)
+    try:
+        vendors.from_spec(name, spec)
+    except ValueError as e:
+        print(f"✗ {e}", file=sys.stderr)
+        return 2
+    print(WORKER_WARNING)
+    if not a.yes:
+        if not sys.stdin.isatty():
+            print("  (pass -y to confirm without a terminal)", file=sys.stderr)
+            return 2
+        if input(f"  Add {name}? [y/N] ").strip().lower() != "y":
+            return 1
+    cfg.custom_workers[name] = spec
+    config.save(cfg)
+    found = vendors.find(cfg, vendors.from_spec(name, spec))
+    print(f"  ✓ added {name}" + (f" ({found})" if found else
+                                 f" - but its CLI is not on PATH yet"
+                                 + (f": {spec['install']}" if spec.get("install") else "")
+                                 + " (or set it with --bin)"))
+    print(f"  next: halo workers test {name}" + (":<model>" if spec.get("model_args") else ""))
     return 0
 
 
@@ -459,6 +556,15 @@ def main(argv=None):
     s.add_argument("action", nargs="?", choices=["add", "remove"])
     s.add_argument("names", nargs="*", metavar="AGENT", help="claude, codex, gemini")
     s.set_defaults(fn=cmd_agents)
+
+    s = sub.add_parser("workers", help="vendor CLIs HALO can hand work to; add your own")
+    s.add_argument("action", nargs="?", choices=["list", "add", "remove", "test"])
+    s.add_argument("name", nargs="?", metavar="NAME[:MODEL]")
+    s.add_argument("--spec", help="add: the worker as JSON, or @file.json (default: preset)")
+    s.add_argument("--bin", help="add: path of the CLI (default: NAME on PATH)")
+    s.add_argument("--no-agent", action="store_true", help="test: skip the toy handoff")
+    s.add_argument("-y", "--yes", action="store_true", help="add: no confirmation")
+    s.set_defaults(fn=cmd_workers)
 
     s = sub.add_parser("models", help="list local models that fit this machine, or download")
     s.add_argument("--pull", nargs="+", metavar="NAME")

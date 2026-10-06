@@ -41,6 +41,9 @@ class Config:
     codex_bin: str = ""
     claude_bin: str = ""
     gemini_bin: str = ""
+    # Worker CLIs the user added ({name: spec}, see vendors.from_spec / `halo workers add`):
+    # usable wherever codex/claude/gemini are - fallback tier, council, handoff.
+    custom_workers: dict = field(default_factory=dict)
     # Who `halo council` / halo_council asks by default: vendor workers and/or local models.
     council_models: list = field(default_factory=list)
     # HFF (frontier-to-frontier handoff): which vendor agent takes a whole sub-task, how many

@@ -223,6 +223,35 @@ tests, `codex` passed in one round (59 s, 73k Codex input tokens) and `claude:ha
 round (33 s). The project (minus secrets) is sent to that vendor; default agent is
 `handoff_agent` (`codex`). Like council, it stays available in *Frontier only* mode.
 
+**Adding your own worker: `halo workers`.** Any other coding CLI that runs headless can join:
+as a worker (fallback tier, council), as a handoff agent, or both. A worker is a few lines of
+JSON under `custom_workers` in the config: the command for each role with `{bin}`, `{work}`,
+`{model}` and `{prompt_file}` filled in (the prompt goes on stdin otherwise), extra
+environment variables per role, and how to read its output (`text`, or `json`/`jsonl` with
+dotted paths to the answer, token counts and errors). See the top of `halo/vendors.py`.
+
+```sh
+halo workers add opencode            # from a preset (presets: opencode)
+halo workers add mycli --spec @mycli.json --bin ~/bin/mycli
+halo workers test opencode:halo/coder   # one-word question + a toy handoff whose tests must pass
+halo workers remove mycli
+```
+
+Then use it like a built-in one: `halo handoff -a opencode:halo/coder ...`,
+`"handoff_agent": "opencode:halo/coder"`, or in `fallback_models` / `council_models`.
+`opencode` pointed at a local model (a provider in opencode's own config, e.g. the HALO local
+API or Ollama) makes a **free handoff agent**: with qwen3.6:35b it passed the toy handoff in
+53 s, while qwen3:30b-a3b gave up on it. opencode's hosted free tier cannot be used, since it
+refuses any config override and HALO needs one to deny shell access.
+
+**HALO cannot sandbox a worker you add**, and says so on `add`. It runs the CLI in the scratch
+copy with `cwd`, `$PWD` and the workspace placeholder all pointing there, and only brings back
+sector files after the check passes. Whatever the CLI's own permissions allow still runs as
+you. This is not theoretical: before `$PWD` was set, opencode took its project root from
+`$PWD` and edited a file in the directory HALO was started from. Deny shell and outside
+directories in the CLI's own settings (the opencode preset does), and run `halo workers test`
+from a directory you don't mind before trusting a new worker.
+
 ## How savings are counted (`halo stats`)
 
 Every task is appended to `~/.local/share/halo/ledger.jsonl`:

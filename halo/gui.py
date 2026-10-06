@@ -50,11 +50,21 @@ def _login_path() -> None:
 
 
 
-def _council_choices(installed: list[str]) -> list[str]:
-    return list(llm.CLI_WORKERS) + installed
+def _council_choices(cfg, installed: list[str]) -> list[str]:
+    return [n for n, v in vendors.all_vendors(cfg).items() if v.worker] + installed
 
 
-HANDOFF_AGENTS = tuple(vendors.names()) + ("claude:haiku", "claude:sonnet")
+def _handoff_choices(cfg) -> list[str]:
+    """Vendors that can work as agents, plus the current setting (which may carry a model,
+    e.g. a user worker set with `halo workers` or the CLI)."""
+    out = [n for n, v in vendors.all_vendors(cfg).items() if v.agent]
+    out[out.index("claude") + 1:out.index("claude") + 1] = ["claude:haiku", "claude:sonnet"]
+    return out + ([cfg.handoff_agent] if cfg.handoff_agent not in out else [])
+
+
+def _handoff_ok(cfg, agent) -> bool:
+    v, _ = vendors.split(agent if isinstance(agent, str) else "", cfg)
+    return bool(v and v.agent)
 
 
 def _recent_handoffs(records: list[dict], n: int = 6) -> list[dict]:
@@ -93,9 +103,9 @@ def status() -> dict:
                    for n, a in integration.status()["agents"].items()],
         "vendors": vendors.status(cfg),
         "council": {"members": tasks.council_models(cfg),
-                    "choices": _council_choices(installed)},
+                    "choices": _council_choices(cfg, installed)},
         "handoff": {"agent": cfg.handoff_agent, "rounds": cfg.handoff_rounds,
-                    "choices": list(HANDOFF_AGENTS), "recent": _recent_handoffs(records)},
+                    "choices": _handoff_choices(cfg), "recent": _recent_handoffs(records)},
         "stats": {"tasks": t.get("tasks", 0), "ok": t.get("ok", 0) + t.get("passed", 0),
                   "local_tokens": t.get("local_in", 0) + t.get("local_out", 0),
                   "saved_upper_bound": s["frontier_saved_est"]},
@@ -212,7 +222,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(status())
         elif self.path == "/api/council":
             cfg = config.load()
-            choices = set(_council_choices(status()["models"]["installed"]))
+            choices = set(_council_choices(cfg, status()["models"]["installed"]))
             members = [m for m in body.get("members", []) if m in choices]
             if not members:
                 self._send({"error": "pick at least one council member"}, code=400)
@@ -223,7 +233,7 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/handoff":
             cfg = config.load()
             agent, rounds = body.get("agent"), body.get("rounds")
-            if agent not in HANDOFF_AGENTS or not isinstance(rounds, int) or not 1 <= rounds <= 5:
+            if not _handoff_ok(cfg, agent) or not isinstance(rounds, int) or not 1 <= rounds <= 5:
                 self._send({"error": "pick an agent and 1-5 rounds"}, code=400)
                 return
             cfg.handoff_agent, cfg.handoff_rounds = agent, rounds

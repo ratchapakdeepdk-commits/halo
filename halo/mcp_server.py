@@ -138,7 +138,8 @@ TOOLS = [
                           "description": "Command run from workdir that must exit 0."},
                 "workdir": {"type": "string", "description": "Project root (default: cwd)."},
                 "agent": {"type": "string",
-                          "description": "codex | gemini | claude[:model] (default: config)."},
+                          "description": "codex | gemini | claude[:model], or a worker the user "
+                                         "added with `halo workers` (default: config)."},
                 "rounds": {"type": "integer", "description": "Attempts at the check (default 2)."},
                 "full_diff": {"type": "boolean",
                               "description": "true = always return the diff, false = never. "
@@ -211,7 +212,7 @@ def call_tool(name: str, args: dict) -> dict:
             return {"status": "error", "error": f"outside the allowed directories: {bad}"}
         models = args.get("models") or None
         if cfg.mode != "hybrid":  # frontier-only: vendors yes, local models no
-            models = [m for m in (models or tasks.council_models(cfg)) if llm.is_cloud(m)]
+            models = [m for m in (models or tasks.council_models(cfg)) if llm.is_cloud(m, cfg)]
             if not models:
                 return {"status": "off", "error": "frontier-only mode: no vendor models "
                                                   "in the council"}

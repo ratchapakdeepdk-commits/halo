@@ -68,8 +68,9 @@ CLI_WORKERS = tuple(vendors.names())
 RETRY_WAITS = (5, 20)  # seconds between attempts on a transient Ollama failure
 
 
-def is_cloud(model: str | None) -> bool:
-    return vendors.split(model)[0] is not None
+def is_cloud(model: str | None, cfg: Config | None = None) -> bool:
+    """A vendor CLI (built in, or one of the user's workers when `cfg` is given)."""
+    return vendors.split(model, cfg)[0] is not None
 
 
 WORKER_RULES = (
@@ -84,13 +85,19 @@ def _run_vendor(cfg: Config, model: str, role: str, prompt: str, work: str,
     """Run vendor `model` ("name[:model]") in `role` "worker" or "agent" with `work` as its
     workspace; returns its final message. Raises LocalModelError when the CLI is missing,
     fails or times out."""
-    v, sub = vendors.split(model)
+    v, sub = vendors.split(model, cfg)
+    template = v.worker if role == "worker" else v.agent
+    if not template:
+        raise LocalModelError(f"{v.name} has no {role} command"
+                              + (" (it cannot take a handoff)" if role == "agent" else ""))
     exe = vendors.find(cfg, v)
     if not exe:
-        raise LocalModelError(f"{v.name} CLI not found (install it and sign in first)")
-    template = v.worker if role == "worker" else v.agent
+        raise LocalModelError(f"{v.name} CLI not found (install it and sign in first"
+                              + (f": {v.install}" if v.install else "") + ")")
     # HALO_WORKER=1: the MCP server offers no tools inside a vendor, so no delegation loops.
-    env = dict(os.environ, HALO_WORKER="1")
+    # PWD too: some CLIs (opencode) take their project root from $PWD, not the real cwd, and
+    # then edit the directory HALO was started from instead of the scratch copy.
+    env = dict(os.environ, HALO_WORKER="1", PWD=work)
     # The prompt file lives outside `work`, so it never shows up in a handoff's diff.
     with tempfile.TemporaryDirectory(prefix="halo-prompt-") as tmp:
         pfile = ""
@@ -100,6 +107,9 @@ def _run_vendor(cfg: Config, model: str, role: str, prompt: str, work: str,
                 fh.write(prompt)
         cmd = vendors.command(template, v.model_args, bin=exe, work=work, model=sub,
                               prompt_file=pfile)
+        vals = {"bin": exe, "work": work, "model": sub, "prompt_file": pfile}
+        for k, val in (v.worker_env if role == "worker" else v.agent_env).items():
+            env[k] = vendors.fill(val, vals)
         try:
             p = subprocess.run(cmd, input="" if pfile else prompt, capture_output=True,
                                text=True, timeout=timeout, cwd=work, env=env)
@@ -135,16 +145,16 @@ def cli_agent(cfg: Config, prompt: str, model: str, work: str, usage: Usage | No
     """Run a vendor CLI as an agent (HFF handoff) inside `work`, a scratch copy of the
     project; returns its final message. Each vendor may edit files only in that copy; shell
     access follows its own sandbox."""
-    if not is_cloud(model):
+    if not is_cloud(model, cfg):
         raise LocalModelError(f"{model} is not an agent CLI "
-                              f"(use one of {', '.join(vendors.names())})")
+                              f"(use one of {', '.join(vendors.names(cfg))})")
     return _run_vendor(cfg, model, "agent", prompt, work, usage, timeout or cfg.timeout)
 
 
 def generate(cfg: Config, prompt: str, *, system: str = "", model: str | None = None,
              usage: Usage | None = None, num_ctx: int | None = None,
              temperature: float | None = None, max_tokens: int | None = None) -> str:
-    if is_cloud(model or cfg.model):
+    if is_cloud(model or cfg.model, cfg):
         return _cli_worker(cfg, prompt, system, model or cfg.model, usage)
     payload = {
         "model": model or cfg.model,
