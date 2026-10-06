@@ -12,6 +12,10 @@ Both are command templates. In each element of a template these are filled in:
 
 and the element "{model_args}" becomes `model_args` when a model is named, or nothing.
 `worker_env` / `agent_env` add environment variables for that role (same placeholders).
+`run_check: true` (opt-in) lets the agent run the handoff's check command itself: then
+`check_env` is added over `agent_env`, with {check} (the command) and {check_json} (the
+command escaped for a JSON string) filled in. That means running code the model wrote,
+with no sandbox around it beyond the CLI's own permission rules.
 `output` names how stdout is read: "codex", "claude", "gemini" (their own formats), "text"
 (all of stdout is the answer, tokens unknown), "json" (one document) or "jsonl" (one event
 per line), the last two read through dotted `paths`:
@@ -38,7 +42,7 @@ import shutil
 import urllib.parse
 from dataclasses import dataclass, field
 
-PLACEHOLDERS = ("{bin}", "{work}", "{model}", "{prompt_file}")
+PLACEHOLDERS = ("{bin}", "{work}", "{model}", "{prompt_file}", "{check}", "{check_json}")
 OUTPUTS = ("codex", "claude", "gemini", "text", "json", "jsonl")
 NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 ENV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -63,6 +67,8 @@ class Vendor:
     key_env: str = ""
     key_file: str = ""
     default_model: str = ""
+    run_check: bool = False   # the agent may run the handoff's check itself (opt-in)
+    check_env: dict = field(default_factory=dict)
 
 
 BUILTIN = {
@@ -131,6 +137,12 @@ PRESETS = {
         "agent_env": {"OPENCODE_CONFIG_CONTENT":
                       '{"permission":{"bash":"deny","webfetch":"deny",'
                       '"external_directory":"deny"}}'},
+        # With run_check: shell stays denied except the exact check command (opencode
+        # matches the whole command, so `check; rm -rf x` or `check 2>&1` is refused).
+        "run_check": False,
+        "check_env": {"OPENCODE_CONFIG_CONTENT":
+                      '{"permission":{"bash":{"*":"deny","{check_json}":"allow"},'
+                      '"webfetch":"deny","external_directory":"deny"}}'},
         "output": "jsonl",
         "paths": {"answer": "part.text",
                   "tokens_in": ["part.tokens.input", "part.tokens.cache.read"],
@@ -151,7 +163,7 @@ def from_spec(name: str, spec: dict) -> Vendor:
     if spec.get("api"):
         return _api_spec(name, spec)
     known = {"label", "install", "bin", "worker", "agent", "model_args", "worker_env",
-             "agent_env", "output", "paths"}
+             "agent_env", "output", "paths", "run_check", "check_env"}
     extra = set(spec) - known
     if extra:
         raise ValueError(f"{name}: unknown keys {sorted(extra)} (allowed: {sorted(known)})")
@@ -171,6 +183,12 @@ def from_spec(name: str, spec: dict) -> Vendor:
     worker, agent = argv("worker"), argv("agent")
     if not worker and not agent:
         raise ValueError(f"{name}: give a `worker` command, an `agent` command or both")
+    run_check = spec.get("run_check", False)
+    if not isinstance(run_check, bool):
+        raise ValueError(f"{name}.run_check must be true or false")
+    if run_check and not (agent and spec.get("check_env")):
+        raise ValueError(f"{name}: run_check needs an agent command and a check_env that "
+                         f"allows exactly {{check}} in the CLI's own permission rules")
     output = spec.get("output", "text")
     if output not in OUTPUTS:
         raise ValueError(f"{name}.output must be one of {', '.join(OUTPUTS)}")
@@ -181,7 +199,8 @@ def from_spec(name: str, spec: dict) -> Vendor:
                   model_args=argv("model_args"), output=output,
                   install=str(spec.get("install") or ""), bin=str(spec.get("bin") or ""),
                   worker_env=env("worker_env"), agent_env=env("agent_env"),
-                  paths=dict(paths), custom=True)
+                  paths=dict(paths), custom=True, run_check=run_check,
+                  check_env=env("check_env"))
 
 
 def _local_host(host: str) -> bool:
@@ -229,7 +248,8 @@ def api_key(v: Vendor) -> str | None:
 
 
 def build_spec(name: str, *, spec: dict | None = None, api: str = "", key_env: str = "",
-               key_file: str = "", model: str = "", bin: str = "") -> dict:
+               key_file: str = "", model: str = "", bin: str = "",
+               run_check: bool | None = None) -> dict:
     """The config spec for `halo workers add` and the GUI: `spec` as given, else an API from
     `api`, else the preset called `name`; the other arguments override. The CLI is looked up
     now and stored as an absolute path, so agents with another PATH still find it. Raises
@@ -252,6 +272,8 @@ def build_spec(name: str, *, spec: dict | None = None, api: str = "", key_env: s
             spec[key] = val
     if key_env or key_file:  # one replaces the other, e.g. a preset's key_env
         spec.pop("key_file" if key_env else "key_env", None)
+    if run_check is not None:
+        spec["run_check"] = run_check
     if not spec.get("api"):
         exe = bin or spec.get("bin") or shutil.which(name)
         if exe:
@@ -273,6 +295,12 @@ def remove(cfg, name: str) -> bool:
     if mine(cfg.handoff_agent):
         cfg.handoff_agent = type(cfg)().handoff_agent
     return True
+
+
+def check_allowed(check: str) -> bool:
+    """A check an agent may run itself: one plain command line. Glob characters would
+    widen a CLI's permission pattern beyond this exact command."""
+    return bool(check.strip()) and not any(c in check for c in "*?[]\n\r")
 
 
 def custom(cfg) -> dict:
@@ -332,13 +360,13 @@ def status(cfg) -> list[dict]:
                                       f"put the key in {v.key_file}" if v.key_file else ""),
              "installed": ready(cfg, v), "custom": v.custom, "api": v.api,
              "model": v.default_model, "worker": bool(v.worker or v.api),
-             "agent": bool(v.agent)}
+             "agent": bool(v.agent), "run_check": v.run_check}
             for v in all_vendors(cfg).values()]
 
 
 def command(template: tuple, model_args: tuple, *, bin: str, work: str, model: str,
-            prompt_file: str = "") -> list[str]:
-    vals = {"bin": bin, "work": work, "model": model, "prompt_file": prompt_file}
+            prompt_file: str = "", check: str = "") -> list[str]:
+    vals = values(bin=bin, work=work, model=model, prompt_file=prompt_file, check=check)
     out = []
     for part in template:
         if part == "{model_args}":
@@ -346,6 +374,11 @@ def command(template: tuple, model_args: tuple, *, bin: str, work: str, model: s
         else:
             out.append(fill(part, vals))
     return out
+
+
+def values(*, bin: str, work: str, model: str, prompt_file: str = "", check: str = "") -> dict:
+    return {"bin": bin, "work": work, "model": model, "prompt_file": prompt_file,
+            "check": check, "check_json": json.dumps(check)[1:-1]}
 
 
 def fill(text: str, vals: dict) -> str:

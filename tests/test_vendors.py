@@ -228,6 +228,43 @@ class TestUserWorker(Base):
         self.assertIn("no agent command", r.get("reason", "") + r.get("error", ""))
         self.assertEqual(list(handoff.probe(self.cfg, "oc")["steps"]), ["worker"])
 
+    def test_run_check_is_off_by_default(self):
+        r = handoff.probe(self.cfg, "oc")
+        call = self.calls()[1]
+        self.assertEqual(json.loads(call["perm"])["permission"]["bash"], "deny")
+        self.assertNotIn("You may run exactly", call["prompt"])
+        self.assertEqual(r["status"], "passed")
+
+    def test_run_check_allows_exactly_the_check(self):
+        self.cfg.custom_workers["oc"]["run_check"] = True
+        proj = os.path.join(self.dir, "p")
+        os.makedirs(proj)
+        with open(os.path.join(proj, "calc.py"), "w") as fh:
+            fh.write("x = 1\n")
+        check = f'"{sys.executable}" -c "import calc"'
+        r = handoff.handoff(self.cfg, "fix", ["calc.py"], workdir=proj, agent="oc", check=check)
+        self.assertTrue(r["agent_ran_check"])
+        call = self.calls()[-1]
+        bash = json.loads(call["perm"])["permission"]["bash"]
+        self.assertEqual(bash, {"*": "deny", check: "allow"})  # quotes survive the JSON
+        self.assertIn("You may run exactly that check command", call["prompt"])
+
+    def test_run_check_refuses_globs(self):
+        self.cfg.custom_workers["oc"]["run_check"] = True
+        proj = os.path.join(self.dir, "p")
+        os.makedirs(proj)
+        r = handoff.handoff(self.cfg, "fix", ["calc.py"], workdir=proj, agent="oc",
+                            check="python3 -m pytest tests/*")
+        self.assertFalse(r["agent_ran_check"])
+        self.assertEqual(json.loads(self.calls()[-1]["perm"])["permission"]["bash"], "deny")
+
+    def test_run_check_needs_check_env(self):
+        with self.assertRaises(ValueError):
+            vendors.from_spec("x", {"agent": ["{bin}"], "run_check": True})
+        with self.assertRaises(ValueError):
+            vendors.from_spec("x", {"agent": ["{bin}"], "run_check": "yes",
+                                    "check_env": {"A": "{check}"}})
+
     def test_gui_choices(self):
         from halo import gui
         self.cfg.handoff_agent = "oc:halo/coder"

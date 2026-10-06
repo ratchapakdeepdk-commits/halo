@@ -183,7 +183,8 @@ def _workers_post(body: dict):
         spec = vendors.build_spec(name, spec=spec, api=body.get("api") or "",
                                   key_env=body.get("key_env") or "",
                                   key_file=body.get("key_file") or "",
-                                  model=body.get("model") or "", bin=body.get("bin") or "")
+                                  model=body.get("model") or "", bin=body.get("bin") or "",
+                                  run_check=True if body.get("run_check") is True else None)
     except ValueError as e:
         return {"error": str(e)}, 400
     cfg.custom_workers[name] = spec
@@ -429,6 +430,7 @@ max-height:260px;overflow:auto;white-space:pre-wrap;margin:10px 0 0}
  "model_args": ["--model", "{model}"],
  "output": "text"}</textarea>
     <label for="w-bin">CLI path (optional)</label><input class="tx" id="w-bin" placeholder="found on PATH by name"></div>
+   <label class="chk" id="w-rc-row"><input type="checkbox" id="w-rc" onchange="wWarn()"> Let it run the handoff's check itself (it can then test its own work; runs code the model wrote, with no sandbox)</label>
    <div class="warn" id="w-warn"></div>
    <label class="chk"><input type="checkbox" id="w-ok"> I understand</label>
    <div class="btns"><button class="btn primary" onclick="addWorker()">Add worker</button></div>
@@ -525,7 +527,7 @@ async function saveHandoff(){const r=await post("/api/handoff",{agent:$("h-agent
  if(r.error)alert(r.error);else render(r)}
 async function job(name){await post("/api/"+name);refresh()}
 function renderWorkers(s){
- $("workers").innerHTML=s.vendors.map(v=>{const roles=v.api?"API · text only":[v.worker&&"worker",v.agent&&"handoff agent"].filter(Boolean).join(" + ");
+ $("workers").innerHTML=s.vendors.map(v=>{const roles=v.api?"API · text only":[v.worker&&"worker",v.agent&&"handoff agent"].filter(Boolean).join(" + ")+(v.run_check?" · runs the check":"");
   const state=v.installed?(v.api?"ready":"installed"):(v.api?"no key":"not installed");
   return row(`${dot(v.installed)}<span class="nm">${esc(v.name)}</span> <span class="sub">${esc(v.label)}${v.custom?" · yours":""}</span>`,
    `<span class="sub">${esc(roles)} · ${esc(state)}${v.installed?"":(v.install?" — "+esc(v.install):"")}</span>
@@ -539,12 +541,13 @@ function wIsApi(){const k=$("w-kind").value;return k==="api"||k==="preset"&&!!S.
 function wKind(){const k=$("w-kind").value;for(const f of["preset","api","cli"])$("w-f-"+f).hidden=f!==k;
  if(k==="preset")wPreset();else wWarn()}
 function wPreset(){const n=$("w-name");if(!n.value||S.presets.some(p=>p.name===n.value))n.value=$("w-preset").value;wWarn()}
-function wWarn(){$("w-warn").textContent=wIsApi()?"Prompts and the material HALO gives this worker (specs, failing code, council files) are sent to that API."
+function wWarn(){$("w-rc-row").hidden=wIsApi();$("w-warn").textContent=(!wIsApi()&&$("w-rc").checked?"It may run the check command, which runs code the model just wrote, as you, with no sandbox beyond the CLI's own rule that allows only that exact command. ":"")+(wIsApi()?"Prompts and the material HALO gives this worker (specs, failing code, council files) are sent to that API."
   :"HALO cannot sandbox a CLI you add. Whatever its own permissions allow runs as you, inside a scratch copy of the project (secrets left out). Only files inside the sector come back, and only after the check passes, but the CLI itself can still read your home directory or use the network if it is allowed to. Deny shell and outside directories in its own settings."}
 async function addWorker(){const k=$("w-kind").value,b={action:"add",name:$("w-name").value.trim(),understood:$("w-ok").checked};
  if(k==="preset")b.preset=$("w-preset").value;
  if(k==="api")Object.assign(b,{api:$("w-api").value.trim(),model:$("w-model").value.trim(),key_env:$("w-kenv").value.trim(),key_file:$("w-kfile").value.trim()});
  if(k==="cli")Object.assign(b,{spec:$("w-spec").value,bin:$("w-bin").value.trim()});
+ if(!wIsApi()&&$("w-rc").checked)b.run_check=true;
  const r=await post("/api/workers",b);if(r.error){alert(r.error);return}
  $("w-ok").checked=false;$("w-add").open=false;render(r)}
 async function wRemove(name){if(!confirm("Remove "+name+"?"))return;const r=await post("/api/workers",{action:"remove",name});if(r.error)alert(r.error);else render(r)}

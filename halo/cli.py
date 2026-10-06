@@ -360,6 +360,13 @@ API_WARNING = """\
     are sent to {api}. The key stays in {where} - it is never written to the config."""
 
 
+RUN_CHECK_WARNING = """\
+  ! run_check is on: this agent may run the handoff's check command itself. The check runs
+    code the model just wrote (it can also rewrite the tests in its copy), as you, with no
+    sandbox beyond the CLI's own rule that allows only that exact command. Turn it off with
+    halo workers add {name} --no-run-check."""
+
+
 def _load_spec(text: str) -> dict:
     if text.startswith("@"):
         with open(os.path.expanduser(text[1:]), encoding="utf-8") as fh:
@@ -371,8 +378,9 @@ def cmd_workers(a, cfg):
     if a.action in (None, "list"):
         for s in vendors.status(cfg):
             roles = "api" if s["api"] else "+".join(r for r in ("worker", "agent") if s[r])
+            roles += " +check" if s["run_check"] else ""
             print(f"  {s['name']:<10} {'yours' if s['custom'] else 'built in':<9} "
-                  f"{('ready' if s['installed'] else 'no key') if s['api'] else ('installed' if s['installed'] else 'not found'):<10} {roles:<13} {s['label']}")
+                  f"{('ready' if s['installed'] else 'no key') if s['api'] else ('installed' if s['installed'] else 'not found'):<10} {roles:<19} {s['label']}")
         for p in vendors.problems(cfg):
             print(f"  ✗ ignored: {p}")
         print("\nadd one: halo workers add opencode   (presets: "
@@ -414,7 +422,7 @@ def cmd_workers(a, cfg):
     try:
         spec = vendors.build_spec(name, spec=_load_spec(a.spec) if a.spec else None,
                                   api=a.api, key_env=a.key_env, key_file=a.key_file,
-                                  model=a.model, bin=a.bin)
+                                  model=a.model, bin=a.bin, run_check=a.run_check)
     except OSError as e:
         print(f"--spec: {e}", file=sys.stderr)
         return 2
@@ -424,6 +432,8 @@ def cmd_workers(a, cfg):
     v = vendors.from_spec(name, spec)
     print(API_WARNING.format(api=v.api, where=f"${v.key_env}" if v.key_env else
                              v.key_file or "(none: no key)") if v.api else WORKER_WARNING)
+    if v.run_check:
+        print(RUN_CHECK_WARNING.format(name=name))
     if not a.yes:
         if not sys.stdin.isatty():
             print("  (pass -y to confirm without a terminal)", file=sys.stderr)
@@ -569,6 +579,9 @@ def main(argv=None):
     s.add_argument("--key-env", metavar="VAR", help="add: env variable holding the API key")
     s.add_argument("--key-file", metavar="PATH", help="add: file holding the API key")
     s.add_argument("--model", help="add: default model of an API worker")
+    s.add_argument("--run-check", action=argparse.BooleanOptionalAction, default=None,
+                   help="add: let the agent run the handoff's check itself (runs code the "
+                        "model wrote, no sandbox; needs check_env in the spec)")
     s.add_argument("--no-agent", action="store_true", help="test: skip the toy handoff")
     s.add_argument("-y", "--yes", action="store_true", help="add: no confirmation")
     s.set_defaults(fn=cmd_workers)

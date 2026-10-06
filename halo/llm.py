@@ -81,7 +81,7 @@ WORKER_RULES = (
 
 
 def _run_vendor(cfg: Config, model: str, role: str, prompt: str, work: str,
-                usage: Usage | None, timeout: int) -> str:
+                usage: Usage | None, timeout: int, check: str = "") -> str:
     """Run vendor `model` ("name[:model]") in `role` "worker" or "agent" with `work` as its
     workspace; returns its final message. Raises LocalModelError when the CLI is missing,
     fails or times out."""
@@ -107,9 +107,12 @@ def _run_vendor(cfg: Config, model: str, role: str, prompt: str, work: str,
             with open(pfile, "w", encoding="utf-8") as fh:
                 fh.write(prompt)
         cmd = vendors.command(template, v.model_args, bin=exe, work=work, model=sub,
-                              prompt_file=pfile)
-        vals = {"bin": exe, "work": work, "model": sub, "prompt_file": pfile}
-        for k, val in (v.worker_env if role == "worker" else v.agent_env).items():
+                              prompt_file=pfile, check=check)
+        vals = vendors.values(bin=exe, work=work, model=sub, prompt_file=pfile, check=check)
+        extra = dict(v.worker_env if role == "worker" else v.agent_env)
+        if role == "agent" and check and agent_runs_check(v, check):
+            extra.update(v.check_env)
+        for k, val in extra.items():
             env[k] = vendors.fill(val, vals)
         try:
             p = subprocess.run(cmd, input="" if pfile else prompt, capture_output=True,
@@ -183,15 +186,20 @@ def _cli_worker(cfg: Config, prompt: str, system: str, model: str, usage: Usage 
         return _run_vendor(cfg, model, "worker", text, work, usage, cfg.timeout)
 
 
+def agent_runs_check(v, check: str) -> bool:
+    """The agent may run this handoff's check itself: opted in, and a plain command."""
+    return bool(v and v.run_check and vendors.check_allowed(check))
+
+
 def cli_agent(cfg: Config, prompt: str, model: str, work: str, usage: Usage | None = None,
-              timeout: int | None = None) -> str:
+              timeout: int | None = None, check: str = "") -> str:
     """Run a vendor CLI as an agent (HFF handoff) inside `work`, a scratch copy of the
     project; returns its final message. Each vendor may edit files only in that copy; shell
     access follows its own sandbox."""
     if not is_cloud(model, cfg):
         raise LocalModelError(f"{model} is not an agent CLI "
                               f"(use one of {', '.join(vendors.names(cfg))})")
-    return _run_vendor(cfg, model, "agent", prompt, work, usage, timeout or cfg.timeout)
+    return _run_vendor(cfg, model, "agent", prompt, work, usage, timeout or cfg.timeout, check)
 
 
 def generate(cfg: Config, prompt: str, *, system: str = "", model: str | None = None,

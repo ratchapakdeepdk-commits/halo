@@ -50,7 +50,7 @@ Rules:
   nothing and say why in your final message, starting with "#ESCALATE:".
 - HALO runs this check from the project root afterwards and it must exit 0:
     {check}
-- Finish with a short summary (max 8 lines) of what you changed and anything the other
+{run_check}- Finish with a short summary (max 8 lines) of what you changed and anything the other
   agent must know. Do not paste whole files into it.
 
 Task:
@@ -213,12 +213,18 @@ def handoff(cfg: Config, task: str, sector: list[str], *, workdir: str = ".",
 
         status, reason, summary, out, feedback, done = "failed", "", "", "", "", 0
         for done in range(1, rounds + 1):
-            prompt = AGENT_RULES.format(sector=", ".join(sector), task=task,
-                                        check=check or "(none - HALO only reviews the diff)")
+            runs = llm.agent_runs_check(vendors.split(agent, cfg)[0], check)
+            prompt = AGENT_RULES.format(
+                sector=", ".join(sector), task=task,
+                check=check or "(none - HALO only reviews the diff)",
+                run_check=("- You may run exactly that check command yourself, as often as "
+                           "you like, to see\n  whether it passes. Other shell commands are "
+                           "refused.\n") if runs else "")
             if feedback:
                 prompt += REPAIR.format(feedback=feedback)
             try:
-                summary = llm.cli_agent(cfg, prompt, agent, proj, usage, cfg.handoff_timeout)
+                summary = llm.cli_agent(cfg, prompt, agent, proj, usage, cfg.handoff_timeout,
+                                        check=check)
             except llm.LocalModelError as e:
                 status, reason = "error", str(e)
                 break
@@ -270,6 +276,7 @@ def handoff(cfg: Config, task: str, sector: list[str], *, workdir: str = ".",
     if status in ("passed", "done") and not inside:
         status, reason = "failed", "the agent changed nothing inside the sector"
     result = {"status": status, "agent": agent, "rounds": done, "sector": sector,
+              "agent_ran_check": llm.agent_runs_check(vendors.split(agent, cfg)[0], check),
               "applied": applied, "diffstat": stat, "agent_summary": summary[-1500:]}
     if reason:
         result["reason"] = reason
