@@ -192,7 +192,8 @@ def handoff(cfg: Config, task: str, sector: list[str], *, workdir: str = ".",
         return {"status": "error", "error": f"workdir {workdir} is not a directory"}
     if not llm.is_cloud(agent):
         return {"status": "error",
-                "error": f"{agent} is not a vendor agent: use codex, claude or gemini[:model] "
+                "error": f"{agent} is not a vendor agent: use one of "
+                         f"{', '.join(llm.CLI_WORKERS)} (optionally :model) "
                          f"(local models take single files through halo_code)"}
     sector, bad = normalize_sector(sector or [], workdir)
     if bad or not sector:

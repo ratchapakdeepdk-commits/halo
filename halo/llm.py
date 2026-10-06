@@ -1,8 +1,8 @@
 """Model backends (stdlib only). Tracks token usage for the ledger.
 
 The default backend is Ollama (free, local). A model named `<cli>` or `<cli>:<model>` for a
-cli in CLI_WORKERS runs that vendor's own command-line agent, signed in with the user's plan,
-as a *text-only* worker instead:
+vendor in vendors.py runs that vendor's own command-line agent, signed in with the user's
+plan, as a *text-only* worker instead:
 
   codex[:model]   OpenAI Codex CLI   (`codex exec`)
   claude[:model]  Claude Code        (`claude -p`)
@@ -14,13 +14,13 @@ separately (cloud_*), never as local.
 """
 import json
 import os
-import shutil
 import subprocess
 import tempfile
 import time
 import urllib.error
 import urllib.request
 
+from . import vendors
 from .config import Config
 
 
@@ -64,12 +64,12 @@ def _request(cfg: Config, path: str, payload: dict | None, timeout: int):
         raise LocalModelError(f"cannot reach Ollama at {cfg.ollama_url}: {e}") from None
 
 
-CLI_WORKERS = ("codex", "claude", "gemini")
+CLI_WORKERS = tuple(vendors.names())
 RETRY_WAITS = (5, 20)  # seconds between attempts on a transient Ollama failure
 
 
 def is_cloud(model: str | None) -> bool:
-    return bool(model) and model.split(":", 1)[0] in CLI_WORKERS
+    return vendors.split(model)[0] is not None
 
 
 WORKER_RULES = (
@@ -79,89 +79,34 @@ WORKER_RULES = (
 )
 
 
-def _cmd_codex(exe: str, sub: str, work: str) -> list:
-    cmd = [exe, "exec", "--json", "--ephemeral", "--skip-git-repo-check",
-           "--ignore-user-config", "-s", "read-only", "-C", work]
-    return cmd + (["-m", sub] if sub else []) + ["-"]
-
-
-def _parse_codex(out: str) -> tuple[str, int, int, str]:
-    answer, tin, tout, err = "", 0, 0, ""
-    for line in out.splitlines():
-        try:
-            ev = json.loads(line)
-        except ValueError:
-            continue
-        item = ev.get("item") or {}
-        if ev.get("type") == "item.completed" and item.get("type") == "agent_message":
-            answer = item.get("text", "")
-        elif ev.get("type") == "turn.completed":
-            u = ev.get("usage") or {}
-            tin += u.get("input_tokens", 0)
-            tout += u.get("output_tokens", 0) + u.get("reasoning_output_tokens", 0)
-        elif ev.get("type") in ("error", "turn.failed"):
-            err = json.dumps(ev.get("error") or ev.get("message") or ev)[:300]
-    return answer, tin, tout, err
-
-
-def _cmd_claude(exe: str, sub: str, work: str) -> list:
-    # No tools, no MCP servers, nothing saved: a plain completion on the user's plan.
-    cmd = [exe, "-p", "--output-format", "json", "--strict-mcp-config", "--tools", "",
-           "--no-session-persistence"]
-    return cmd + (["--model", sub] if sub else [])
-
-
-def _parse_claude(out: str) -> tuple[str, int, int, str]:
-    d = json.loads(out)
-    u = d.get("usage") or {}
-    tin = (u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0)
-           + u.get("cache_creation_input_tokens", 0))
-    err = str(d.get("result", ""))[:300] if d.get("is_error") else ""
-    return ("" if err else d.get("result", "")), tin, u.get("output_tokens", 0), err
-
-
-def _cmd_gemini(exe: str, sub: str, work: str) -> list:
-    # plan = read-only approval mode; allowing only a server that does not exist loads no MCP.
-    # The prompt comes on stdin; -p "" switches to headless mode and appends nothing.
-    cmd = [exe, "-o", "json", "--approval-mode", "plan",
-           "--allowed-mcp-server-names", "halo-worker-none", "-p", ""]
-    return cmd + (["-m", sub] if sub else [])
-
-
-def _parse_gemini(out: str) -> tuple[str, int, int, str]:
-    d = json.loads(out[out.index("{"):])
-    tin = tout = 0
-    for m in ((d.get("stats") or {}).get("models") or {}).values():
-        t = m.get("tokens") or {}
-        tin += t.get("prompt", 0)
-        tout += t.get("candidates", 0) + t.get("thoughts", 0)
-    err = json.dumps(d["error"])[:300] if d.get("error") else ""
-    return d.get("response") or "", tin, tout, err
-
-
-_CLI = {"codex": (_cmd_codex, _parse_codex), "claude": (_cmd_claude, _parse_claude),
-        "gemini": (_cmd_gemini, _parse_gemini)}
-
-
-def _cli_worker(cfg: Config, prompt: str, system: str, model: str, usage: Usage | None) -> str:
-    name, _, sub = model.partition(":")
-    exe = shutil.which(getattr(cfg, f"{name}_bin", "") or name)
+def _run_vendor(cfg: Config, model: str, role: str, prompt: str, work: str,
+                usage: Usage | None, timeout: int) -> str:
+    """Run vendor `model` ("name[:model]") in `role` "worker" or "agent" with `work` as its
+    workspace; returns its final message. Raises LocalModelError when the CLI is missing,
+    fails or times out."""
+    v, sub = vendors.split(model)
+    exe = vendors.find(cfg, v)
     if not exe:
-        raise LocalModelError(f"{name} CLI not found (install it and sign in first)")
-    build, parse = _CLI[name]
-    text = WORKER_RULES + (f"{system}\n\n" if system else "") + prompt
-    # HALO_WORKER=1: the MCP server offers no tools inside a worker, so no delegation loops.
+        raise LocalModelError(f"{v.name} CLI not found (install it and sign in first)")
+    template = v.worker if role == "worker" else v.agent
+    # HALO_WORKER=1: the MCP server offers no tools inside a vendor, so no delegation loops.
     env = dict(os.environ, HALO_WORKER="1")
-    # An empty scratch dir as the workspace: the worker only returns text, HALO writes and
-    # checks files itself exactly as it does for local models.
-    with tempfile.TemporaryDirectory(prefix=f"halo-{name}-") as work:
+    # The prompt file lives outside `work`, so it never shows up in a handoff's diff.
+    with tempfile.TemporaryDirectory(prefix="halo-prompt-") as tmp:
+        pfile = ""
+        if vendors.uses_prompt_file(template):
+            pfile = os.path.join(tmp, "prompt.md")
+            with open(pfile, "w", encoding="utf-8") as fh:
+                fh.write(prompt)
+        cmd = vendors.command(template, v.model_args, bin=exe, work=work, model=sub,
+                              prompt_file=pfile)
         try:
-            p = subprocess.run(build(exe, sub, work), input=text, capture_output=True,
-                               text=True, timeout=cfg.timeout, cwd=work, env=env)
+            p = subprocess.run(cmd, input="" if pfile else prompt, capture_output=True,
+                               text=True, timeout=timeout, cwd=work, env=env)
         except subprocess.TimeoutExpired:
-            raise LocalModelError(f"{name} timed out after {cfg.timeout}s") from None
+            raise LocalModelError(f"{v.name} timed out after {timeout}s") from None
     try:
-        answer, tin, tout, err = parse(p.stdout)
+        answer, tin, tout, err = vendors.parse(v, p.stdout)
     except (ValueError, KeyError, AttributeError, TypeError):
         # e.g. gemini without a login prints its error JSON on stderr only
         answer, tin, tout, err = "", 0, 0, ("unreadable output: "
@@ -170,69 +115,30 @@ def _cli_worker(cfg: Config, prompt: str, system: str, model: str, usage: Usage 
         usage.cloud_in += tin
         usage.cloud_out += tout
         usage.cloud_calls += 1
-    if p.returncode != 0 or err or not answer:
-        raise LocalModelError(f"{name} failed (exit {p.returncode}): "
+    # A worker must answer; an agent may finish with its edits and no closing message.
+    if p.returncode != 0 or err or (role == "worker" and not answer):
+        raise LocalModelError(f"{v.name} failed (exit {p.returncode}): "
                               f"{err or p.stderr.strip()[-300:] or 'empty answer'}")
     return answer.strip()
 
 
-# Agent mode (HFF handoff): the vendor CLI works as a real agent inside a scratch copy of the
-# project. Each one may edit files only in that copy; shell access follows its own sandbox.
-def _agent_codex(exe: str, sub: str, work: str) -> list:
-    # workspace-write: commands run sandboxed, writes only inside `work`, no network.
-    cmd = [exe, "exec", "--json", "--ephemeral", "--skip-git-repo-check",
-           "--ignore-user-config", "-s", "workspace-write", "-C", work]
-    return cmd + (["-m", sub] if sub else []) + ["-"]
-
-
-def _agent_claude(exe: str, sub: str, work: str) -> list:
-    # File tools only, no Bash (Claude Code has no sandbox here): HALO runs the check itself.
-    cmd = [exe, "-p", "--output-format", "json", "--strict-mcp-config",
-           "--tools", "Read,Edit,Write,Glob,Grep", "--permission-mode", "acceptEdits",
-           "--no-session-persistence"]
-    return cmd + (["--model", sub] if sub else [])
-
-
-def _agent_gemini(exe: str, sub: str, work: str) -> list:
-    # auto_edit: edit tools approved, shell commands refused in headless mode.
-    cmd = [exe, "-o", "json", "--approval-mode", "auto_edit",
-           "--allowed-mcp-server-names", "halo-worker-none", "-p", ""]
-    return cmd + (["-m", sub] if sub else [])
-
-
-_AGENT = {"codex": _agent_codex, "claude": _agent_claude, "gemini": _agent_gemini}
+def _cli_worker(cfg: Config, prompt: str, system: str, model: str, usage: Usage | None) -> str:
+    text = WORKER_RULES + (f"{system}\n\n" if system else "") + prompt
+    # An empty scratch dir as the workspace: the worker only returns text, HALO writes and
+    # checks files itself exactly as it does for local models.
+    with tempfile.TemporaryDirectory(prefix=f"halo-{model.partition(':')[0]}-") as work:
+        return _run_vendor(cfg, model, "worker", text, work, usage, cfg.timeout)
 
 
 def cli_agent(cfg: Config, prompt: str, model: str, work: str, usage: Usage | None = None,
               timeout: int | None = None) -> str:
-    """Run a vendor CLI as an agent with `work` as its workspace; returns its final message.
-    Raises LocalModelError when the CLI is missing, fails or times out."""
-    name, _, sub = model.partition(":")
-    if name not in _AGENT:
-        raise LocalModelError(f"{model} is not an agent CLI (use one of {', '.join(_AGENT)})")
-    exe = shutil.which(getattr(cfg, f"{name}_bin", "") or name)
-    if not exe:
-        raise LocalModelError(f"{name} CLI not found (install it and sign in first)")
-    env = dict(os.environ, HALO_WORKER="1")  # no HALO tools inside: no delegation loops
-    timeout = timeout or cfg.timeout
-    try:
-        p = subprocess.run(_AGENT[name](exe, sub, work), input=prompt, capture_output=True,
-                           text=True, timeout=timeout, cwd=work, env=env)
-    except subprocess.TimeoutExpired:
-        raise LocalModelError(f"{name} timed out after {timeout}s") from None
-    try:
-        answer, tin, tout, err = _CLI[name][1](p.stdout)
-    except (ValueError, KeyError, AttributeError, TypeError):
-        answer, tin, tout, err = "", 0, 0, ("unreadable output: "
-                                            + (p.stderr.strip()[-300:] or "nothing on stderr"))
-    if usage is not None and (tin or tout):
-        usage.cloud_in += tin
-        usage.cloud_out += tout
-        usage.cloud_calls += 1
-    if p.returncode != 0 or err:
-        raise LocalModelError(f"{name} failed (exit {p.returncode}): "
-                              f"{err or p.stderr.strip()[-300:] or 'no output'}")
-    return answer.strip()
+    """Run a vendor CLI as an agent (HFF handoff) inside `work`, a scratch copy of the
+    project; returns its final message. Each vendor may edit files only in that copy; shell
+    access follows its own sandbox."""
+    if not is_cloud(model):
+        raise LocalModelError(f"{model} is not an agent CLI "
+                              f"(use one of {', '.join(vendors.names())})")
+    return _run_vendor(cfg, model, "agent", prompt, work, usage, timeout or cfg.timeout)
 
 
 def generate(cfg: Config, prompt: str, *, system: str = "", model: str | None = None,

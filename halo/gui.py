@@ -14,7 +14,7 @@ import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import __version__, catalog, config, doctor, integration, ledger, llm, tasks
+from . import __version__, catalog, config, doctor, integration, ledger, llm, tasks, vendors
 
 TOKEN = secrets.token_urlsafe(16)
 _job = {"name": None, "log": [], "running": False, "started": 0}
@@ -48,18 +48,13 @@ def _login_path() -> None:
     os.environ["PATH"] = os.pathsep.join(dict.fromkeys(have + [d for d in extra if d]))
 
 
-AGENT_HINT = {
-    "claude": "npm install -g @anthropic-ai/claude-code",
-    "codex": "npm install -g @openai/codex",
-    "gemini": "npm install -g @google/gemini-cli",
-}
 
 
 def _council_choices(installed: list[str]) -> list[str]:
     return list(llm.CLI_WORKERS) + installed
 
 
-HANDOFF_AGENTS = ("codex", "claude", "claude:haiku", "claude:sonnet", "gemini")
+HANDOFF_AGENTS = tuple(vendors.names()) + ("claude:haiku", "claude:sonnet")
 
 
 def _recent_handoffs(records: list[dict], n: int = 6) -> list[dict]:
@@ -94,8 +89,9 @@ def status() -> dict:
         "models": {"model": cfg.model, "code_model": cfg.code_model,
                    "fallback_models": cfg.fallback_models, "installed": installed},
         "claude": dict(integration.status(), mcp_registered=_mcp_registered()),
-        "agents": [dict(a, name=n, hint=AGENT_HINT.get(n, ""))
+        "agents": [dict(a, name=n, hint=getattr(vendors.get(n), "install", ""))
                    for n, a in integration.status()["agents"].items()],
+        "vendors": vendors.status(cfg),
         "council": {"members": tasks.council_models(cfg),
                     "choices": _council_choices(installed)},
         "handoff": {"agent": cfg.handoff_agent, "rounds": cfg.handoff_rounds,
@@ -379,17 +375,18 @@ function render(s){S=s;$("ver").textContent="v"+s.version;
  const on=s.agents.filter(a=>a.enabled&&a.cli).map(a=>a.title);
  $("modenote").textContent=on.length?"Takes full effect in new "+on.join(" / ")+" sessions."
   :"No agent has HALO yet — add one under Agents.";
- if(!councilDirty){const inst=new Set(s.agents.filter(a=>a.cli).map(a=>a.name));
-  const box=m=>{const cloud=["codex","claude","gemini"].includes(m),dis=cloud&&!inst.has(m);
+ const vend=Object.fromEntries(s.vendors.map(v=>[v.name,v]));
+ if(!councilDirty){
+  const box=m=>{const cloud=!!vend[m],dis=cloud&&!vend[m].installed;
    return `<label class="row" style="justify-content:flex-start"><input type="checkbox" value="${esc(m)}" ${s.council.members.includes(m)?"checked":""} ${dis?"disabled":""}>
-   ${esc(m)} <span class="sub">${cloud?({codex:"GPT via Codex",claude:"Claude",gemini:"Gemini"})[m]+(dis?" (not installed)":""):"local"}</span></label>`};
-  const cloud=s.council.choices.filter(m=>["codex","claude","gemini"].includes(m)),local=s.council.choices.filter(m=>!cloud.includes(m));
+   ${esc(m)} <span class="sub">${cloud?esc(vend[m].brand)+(dis?" (not installed)":""):"local"}</span></label>`};
+  const cloud=s.council.choices.filter(m=>vend[m]),local=s.council.choices.filter(m=>!cloud.includes(m));
   const nl=local.filter(m=>s.council.members.includes(m)).length;
   $("council").innerHTML=cloud.map(box).join("")+(s.mode==="frontier"||!local.length?"":
    `<details ${nl?"open":""}><summary class="sub" style="cursor:pointer;padding:6px 0">Local models (${nl} chosen, Hybrid only)</summary>${local.map(box).join("")}</details>`)}
- const hf=s.handoff,instA=new Set(s.agents.filter(a=>a.cli).map(a=>a.name));
+ const hf=s.handoff;
  if(!document.activeElement||!["h-agent","h-rounds"].includes(document.activeElement.id)){
-  $("h-agent").innerHTML=hf.choices.map(m=>{const ok=instA.has(m.split(":")[0]);
+  $("h-agent").innerHTML=hf.choices.map(m=>{const ok=!!vend[m.split(":")[0]]?.installed;
    return `<option value="${esc(m)}" ${m===hf.agent?"selected":""} ${ok?"":"disabled"}>${esc(m)}${ok?"":" (not installed)"}</option>`}).join("");
   $("h-rounds").value=String(hf.rounds)}
  $("handoffs").innerHTML=hf.recent.length?`<p class="sub" style="margin:10px 0 4px">Recent handoffs</p>`+hf.recent.map(r=>

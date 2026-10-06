@@ -37,7 +37,7 @@ class Config:
     # in. MCP servers run outside the agent's own sandbox, so HALO enforces this itself.
     allowed_roots: list = field(default_factory=list)
     # Vendor CLIs used by the paid worker tiers "codex[:m]", "claude[:m]", "gemini[:m]"
-    # ("" = find on PATH). See llm.CLI_WORKERS.
+    # ("" = find on PATH). See vendors.py.
     codex_bin: str = ""
     claude_bin: str = ""
     gemini_bin: str = ""
