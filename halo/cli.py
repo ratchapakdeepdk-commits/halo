@@ -493,7 +493,7 @@ def main(argv=None):
     s.add_argument("-s", "--sector", action="append", required=True,
                    help="file, directory or glob the agent may change (repeatable)")
     s.add_argument("-c", "--check", help="command that must exit 0, run from the workdir")
-    s.add_argument("-a", "--agent", help="codex, gemini, claude[:model] (default: config)")
+    s.add_argument("-a", "--agent", help="codex, gemini, claude[:model] or one of your `halo workers` (default: config)")
     s.add_argument("-C", "--workdir", default=".")
     s.add_argument("-r", "--rounds", type=int)
     s.add_argument("--no-apply", action="store_true", help="only save a patch")

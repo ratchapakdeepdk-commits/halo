@@ -407,7 +407,7 @@ class TestGuiWorkers(Base):
         self.assertEqual(code, 200, r)
         cfg = config.load()
         self.assertEqual(set(cfg.custom_workers), {"ds", "local", "mine"})
-        self.assertEqual(cfg.custom_workers["mine"]["bin"], "/usr/bin/true")
+        self.assertEqual(cfg.custom_workers["mine"]["bin"], os.path.abspath("/usr/bin/true"))
         names = {v["name"] for v in r["vendors"]}
         self.assertTrue({"ds", "local", "mine"} <= names)
         r, code = self.post({"action": "remove", "name": "ds"})
