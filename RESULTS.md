@@ -442,3 +442,26 @@ two baseline-first.
   list (twice), and invoice amounts computed from hours already rounded to 0.01. The review is
   part of the price of handing off, not an optional extra.
 
+
+### A free receiving agent: opencode + local qwen3.6 (6 Oct 2026)
+
+The same two handoff jobs given straight to `opencode:halo/coder` (opencode 1.18.34 added
+with `halo workers add opencode`, model qwen3.6:35b-a3b via the HALO local API on 2× P100),
+2 repair rounds, no Claude involved: `halo handoff -a opencode:halo/coder -r 2 ...` on a fresh
+copy each time. Shell is denied in the preset, so opencode cannot run the tests itself; it
+only sees HALO's check output between rounds.
+
+| job | run | result | tests at the end | time | opencode tokens in / out |
+|---|---|---|---|---|---|
+| txledger (111 lines) | 1 | failed | 6/9 | 706 s | 693k / 12k |
+| txledger | 2 | **passed** (round 2) | 9/9 | 770 s | 447k / 8k |
+| tasklog (174 lines) | 1 | failed | 6/11 | 1165 s | 457k / 36k |
+| tasklog | 2 | failed | 8/11 | 1002 s | 565k / 31k |
+
+1/4 passed, against Codex 4/4 (txledger, 77–92 s, one round each) and 6/6 (tasklog). Every
+failed run got close, but close does not count: a failed handoff gives the controller
+nothing it can apply, so it has to do the job itself after waiting 12–19 minutes. As a
+*default* agent it is not usable yet. Two things limit it, and only one is the model: it
+works blind, because letting it run the check would mean running model-written code with no
+sandbox (Codex has its own), and qwen3.6 is weaker than GPT-5 at this size. Where it fits
+today: jobs well under 100 lines, or where Codex quota is gone and waiting is acceptable.
