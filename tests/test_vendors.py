@@ -281,3 +281,147 @@ class TestWorkersCommand(Base):
             code, out, cfg = self.run_cli("workers", "add", "opencode")
         self.assertEqual(code, 2)
         self.assertEqual(cfg.custom_workers, {})
+
+
+class FakeAPI:
+    """A minimal OpenAI-compatible /v1/chat/completions that records requests."""
+    def __init__(self, reply="pong", status=200):
+        import http.server
+        import threading
+        outer = self
+        self.requests, self.reply, self.status = [], reply, status
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                outer.requests.append({"path": self.path, "auth": self.headers.get("Authorization"),
+                                       "body": body})
+                data = json.dumps({"choices": [{"message": {"content": outer.reply}}],
+                                   "usage": {"prompt_tokens": 12, "completion_tokens": 3}}
+                                  if outer.status == 200 else {"error": "bad key"}).encode()
+                self.send_response(outer.status)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.srv.server_address[1]}/v1"
+
+    def close(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+
+
+class TestAPIWorker(Base):
+    def setUp(self):
+        super().setUp()
+        self.api = FakeAPI()
+        self.addCleanup(self.api.close)
+        env = mock.patch.dict(os.environ, {"FAKE_KEY": "sk-test"})
+        env.start()
+        self.addCleanup(env.stop)
+        self.cfg.custom_workers = {"myapi": {"api": self.api.url, "key_env": "FAKE_KEY",
+                                             "model": "m1"}}
+
+    def test_answer_tokens_and_key(self):
+        usage = llm.Usage()
+        self.assertEqual(llm.generate(self.cfg, "hi", system="be brief", model="myapi",
+                                      usage=usage), "pong")
+        r = self.api.requests[0]
+        self.assertEqual((r["path"], r["auth"], r["body"]["model"]),
+                         ("/v1/chat/completions", "Bearer sk-test", "m1"))
+        self.assertEqual(r["body"]["messages"][0], {"role": "system", "content": "be brief"})
+        self.assertEqual((usage.cloud_in, usage.cloud_out, usage.cloud_calls), (12, 3, 1))
+        llm.generate(self.cfg, "hi", model="myapi:m2")
+        self.assertEqual(self.api.requests[1]["body"]["model"], "m2")
+
+    def test_key_never_in_config(self):
+        spec = vendors.build_spec("x", api="https://h.example/v1", key_env="FAKE_KEY")
+        self.assertNotIn("sk-test", json.dumps(spec))
+
+    def test_missing_key_and_http_errors(self):
+        del os.environ["FAKE_KEY"]
+        with self.assertRaises(llm.LocalModelError) as e:
+            llm.generate(self.cfg, "hi", model="myapi")
+        self.assertIn("FAKE_KEY", str(e.exception))
+        self.assertEqual(self.api.requests, [])
+        os.environ["FAKE_KEY"] = "k"
+        self.api.status = 401
+        with self.assertRaises(llm.LocalModelError) as e:
+            llm.generate(self.cfg, "hi", model="myapi")
+        self.assertIn("401", str(e.exception))
+
+    def test_plain_http_only_to_this_machine(self):
+        with self.assertRaises(ValueError):
+            vendors.build_spec("x", api="http://api.example.com/v1")
+        vendors.build_spec("x", api="http://127.0.0.1:8820/v1")
+        vendors.build_spec("x", api="http://localhost:8820/v1")
+
+    def test_api_is_text_only(self):
+        with self.assertRaises(llm.LocalModelError) as e:
+            llm.cli_agent(self.cfg, "do", "myapi", self.dir)
+        self.assertIn("text only", str(e.exception))
+        r = handoff.probe(self.cfg, "myapi")
+        self.assertEqual((r["status"], list(r["steps"])), ("passed", ["worker"]))
+
+    def test_api_worker_as_code_fallback(self):
+        from test_halo import BAD, CHECK, GOOD
+        from halo import tasks
+        self.api.reply = GOOD
+        self.cfg.fallback_models = ["myapi"]
+        self.fake.replies = [BAD] * 5
+        r = tasks.code(self.cfg, "add two numbers", "mod.py", CHECK, workdir=self.dir,
+                       max_iters=1)
+        self.assertEqual((r["status"], r["model"]), ("passed", "myapi"))
+
+
+class TestGuiWorkers(Base):
+    def setUp(self):
+        super().setUp()
+        from halo import config
+        config.save(self.cfg)
+
+    def post(self, body):
+        from halo import gui
+        return gui._workers_post(body)
+
+    def test_add_needs_the_box_ticked(self):
+        r, code = self.post({"action": "add", "name": "ds", "preset": "deepseek"})
+        self.assertEqual(code, 400)
+        self.assertIn("sandbox", r["error"])
+
+    def test_add_preset_api_and_cli_then_remove(self):
+        from halo import config
+        r, code = self.post({"action": "add", "name": "ds", "preset": "deepseek",
+                             "understood": True})
+        self.assertEqual(code, 200, r)
+        r, code = self.post({"action": "add", "name": "local", "understood": True,
+                             "api": "http://127.0.0.1:1/v1", "key_file": "~/k"})
+        self.assertEqual(code, 200, r)
+        r, code = self.post({"action": "add", "name": "mine", "understood": True,
+                             "spec": '{"worker": ["{bin}"]}', "bin": "/usr/bin/true"})
+        self.assertEqual(code, 200, r)
+        cfg = config.load()
+        self.assertEqual(set(cfg.custom_workers), {"ds", "local", "mine"})
+        self.assertEqual(cfg.custom_workers["mine"]["bin"], "/usr/bin/true")
+        names = {v["name"] for v in r["vendors"]}
+        self.assertTrue({"ds", "local", "mine"} <= names)
+        r, code = self.post({"action": "remove", "name": "ds"})
+        self.assertEqual(code, 200)
+        self.assertNotIn("ds", config.load().custom_workers)
+
+    def test_bad_input_is_a_400_not_a_crash(self):
+        for body in [{"action": "add", "name": "codex", "understood": True, "preset": "deepseek"},
+                     {"action": "add", "name": "x", "understood": True, "spec": "{not json"},
+                     {"action": "add", "name": "x", "understood": True,
+                      "api": "http://evil.example/v1"},
+                     {"action": "remove", "name": "codex"},
+                     {"action": "test", "name": "qwen3:8b"},
+                     {"action": "nope"}]:
+            r, code = self.post(body)
+            self.assertEqual(code, 400, body)
+            self.assertIn("error", r)

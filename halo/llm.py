@@ -89,7 +89,8 @@ def _run_vendor(cfg: Config, model: str, role: str, prompt: str, work: str,
     template = v.worker if role == "worker" else v.agent
     if not template:
         raise LocalModelError(f"{v.name} has no {role} command"
-                              + (" (it cannot take a handoff)" if role == "agent" else ""))
+                              + (" (it cannot take a handoff)" if role == "agent" else "")
+                              + (": it is an API, text only" if v.api else ""))
     exe = vendors.find(cfg, v)
     if not exe:
         raise LocalModelError(f"{v.name} CLI not found (install it and sign in first"
@@ -132,7 +133,49 @@ def _run_vendor(cfg: Config, model: str, role: str, prompt: str, work: str,
     return answer.strip()
 
 
+def _api_worker(cfg: Config, v, sub: str, prompt: str, system: str,
+                usage: Usage | None) -> str:
+    """One chat completion from an OpenAI-compatible API (a user's API worker)."""
+    model = sub or v.default_model
+    if not model:
+        raise LocalModelError(f"{v.name}: name a model, e.g. {v.name}:<model>")
+    key = vendors.api_key(v)
+    if key is None:
+        raise LocalModelError(f"{v.name}: no API key "
+                              + (f"(set {v.key_env})" if v.key_env else f"in {v.key_file}"))
+    msgs = ([{"role": "system", "content": system}] if system else []) + [
+        {"role": "user", "content": prompt}]
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    req = urllib.request.Request(v.api + "/chat/completions", headers=headers,
+                                 data=json.dumps({"model": model, "messages": msgs}).encode())
+    try:
+        with urllib.request.urlopen(req, timeout=cfg.timeout) as r:
+            d = json.load(r)
+    except urllib.error.HTTPError as e:
+        body = e.read()[:300].decode(errors="replace")
+        raise LocalModelError(f"{v.name} HTTP {e.code}: {body}") from None
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise LocalModelError(f"{v.name}: {e}") from None
+    u = d.get("usage") or {}
+    if usage is not None:
+        usage.cloud_in += u.get("prompt_tokens", 0)
+        usage.cloud_out += u.get("completion_tokens", 0)
+        usage.cloud_calls += 1
+    try:
+        answer = d["choices"][0]["message"].get("content") or ""
+    except (KeyError, IndexError, TypeError, AttributeError):
+        raise LocalModelError(f"{v.name}: unexpected reply {json.dumps(d)[:300]}") from None
+    if not answer.strip():
+        raise LocalModelError(f"{v.name}: empty answer")
+    return answer.strip()
+
+
 def _cli_worker(cfg: Config, prompt: str, system: str, model: str, usage: Usage | None) -> str:
+    v, sub = vendors.split(model, cfg)
+    if v.api:
+        return _api_worker(cfg, v, sub, prompt, system, usage)
     text = WORKER_RULES + (f"{system}\n\n" if system else "") + prompt
     # An empty scratch dir as the workspace: the worker only returns text, HALO writes and
     # checks files itself exactly as it does for local models.

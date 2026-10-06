@@ -21,18 +21,27 @@ per line), the last two read through dotted `paths`:
   tokens_out  likewise
   error       any line that has it makes the run fail with its value
 
+A worker can instead be an OpenAI-compatible HTTP API (`api`: the base URL ending in /v1,
+`key_env` or `key_file` for the key, `model` as default): text only, so it can be a fallback
+tier or a council member but never a handoff agent. The key itself is never stored in the
+config, and is only sent over https (or plain http to this machine).
+
 Users add workers in the config under `custom_workers` ({name: spec}, see from_spec) or
 with `halo workers add`. HALO cannot sandbox those: whatever the CLI's own permissions allow
 runs as the user, inside a scratch copy of the project.
 """
+import ipaddress
 import json
+import os
 import re
 import shutil
+import urllib.parse
 from dataclasses import dataclass, field
 
 PLACEHOLDERS = ("{bin}", "{work}", "{model}", "{prompt_file}")
 OUTPUTS = ("codex", "claude", "gemini", "text", "json", "jsonl")
 NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+ENV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 @dataclass(frozen=True)
@@ -50,6 +59,10 @@ class Vendor:
     agent_env: dict = field(default_factory=dict)
     paths: dict = field(default_factory=dict)  # json/jsonl: answer, tokens_in/out, error
     custom: bool = False
+    api: str = ""        # OpenAI-compatible base URL: an HTTP worker instead of a CLI
+    key_env: str = ""
+    key_file: str = ""
+    default_model: str = ""
 
 
 BUILTIN = {
@@ -89,9 +102,15 @@ BUILTIN = {
 }
 
 
-# Ready-made specs for third-party CLIs: `halo workers add opencode` copies one into the
-# config, where the user can still change it.
+# Ready-made specs: `halo workers add opencode` copies one into the config, where the user
+# can still change it.
 PRESETS = {
+    # OpenAI-compatible APIs. Model names change often, so pick one with "name:model" (or
+    # set `model`); deepseek-chat is DeepSeek's long-lived alias.
+    "deepseek": {"label": "DeepSeek API", "api": "https://api.deepseek.com/v1",
+                 "key_env": "DEEPSEEK_API_KEY", "model": "deepseek-chat"},
+    "openrouter": {"label": "OpenRouter API", "api": "https://openrouter.ai/api/v1",
+                   "key_env": "OPENROUTER_API_KEY"},
     # opencode (npm install -g opencode-ai): model is "provider/model", e.g. a provider for
     # Ollama or the HALO local API set up in opencode's own config. Its permissions come
     # from OPENCODE_CONFIG_CONTENT: the worker may not edit or run anything; the agent edits
@@ -129,6 +148,8 @@ def from_spec(name: str, spec: dict) -> Vendor:
         raise ValueError(f"{name} is built in and cannot be redefined")
     if not isinstance(spec, dict):
         raise ValueError(f"{name}: the spec must be an object")
+    if spec.get("api"):
+        return _api_spec(name, spec)
     known = {"label", "install", "bin", "worker", "agent", "model_args", "worker_env",
              "agent_env", "output", "paths"}
     extra = set(spec) - known
@@ -161,6 +182,97 @@ def from_spec(name: str, spec: dict) -> Vendor:
                   install=str(spec.get("install") or ""), bin=str(spec.get("bin") or ""),
                   worker_env=env("worker_env"), agent_env=env("agent_env"),
                   paths=dict(paths), custom=True)
+
+
+def _local_host(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _api_spec(name: str, spec: dict) -> Vendor:
+    known = {"label", "api", "key_env", "key_file", "model"}
+    extra = set(spec) - known
+    if extra:
+        raise ValueError(f"{name}: unknown keys {sorted(extra)} for an API worker "
+                         f"(allowed: {sorted(known)})")
+    url = urllib.parse.urlparse(str(spec["api"]))
+    if url.scheme not in ("http", "https") or not url.hostname:
+        raise ValueError(f"{name}.api must be an http(s) URL such as https://host/v1")
+    if url.scheme == "http" and not _local_host(url.hostname):
+        raise ValueError(f"{name}.api: plain http only to this machine - the key would "
+                         f"travel unencrypted")
+    key_env, key_file = str(spec.get("key_env") or ""), str(spec.get("key_file") or "")
+    if key_env and not ENV_RE.match(key_env):
+        raise ValueError(f"{name}.key_env must be an environment variable name")
+    if key_env and key_file:
+        raise ValueError(f"{name}: give key_env or key_file, not both")
+    return Vendor(name, str(spec.get("label") or name), worker=(), agent=(), model_args=(),
+                  output="api", api=str(spec["api"]).rstrip("/"), key_env=key_env,
+                  key_file=key_file, default_model=str(spec.get("model") or ""), custom=True)
+
+
+def api_key(v: Vendor) -> str | None:
+    """The key for an API worker: "" when it needs none, None when it is missing."""
+    if v.key_env:
+        return os.environ.get(v.key_env) or None
+    if v.key_file:
+        try:
+            with open(os.path.expanduser(v.key_file), encoding="utf-8") as fh:
+                return fh.read().strip() or None
+        except OSError:
+            return None
+    return ""
+
+
+def build_spec(name: str, *, spec: dict | None = None, api: str = "", key_env: str = "",
+               key_file: str = "", model: str = "", bin: str = "") -> dict:
+    """The config spec for `halo workers add` and the GUI: `spec` as given, else an API from
+    `api`, else the preset called `name`; the other arguments override. The CLI is looked up
+    now and stored as an absolute path, so agents with another PATH still find it. Raises
+    ValueError when the result is not a valid worker."""
+    if name in BUILTIN:
+        raise ValueError(f"{name} is built in already")
+    if spec is not None:
+        spec = json.loads(json.dumps(spec))
+    elif api:
+        spec = {"api": api}
+    elif name in PRESETS:
+        spec = json.loads(json.dumps(PRESETS[name]))
+    else:
+        raise ValueError(f"no preset for {name}: give its commands as a spec, or an API URL "
+                         f"for an OpenAI-compatible API (presets: {', '.join(PRESETS)})")
+    if not isinstance(spec, dict):
+        raise ValueError(f"{name}: the spec must be an object")
+    for key, val in (("key_env", key_env), ("key_file", key_file), ("model", model)):
+        if val:
+            spec[key] = val
+    if key_env or key_file:  # one replaces the other, e.g. a preset's key_env
+        spec.pop("key_file" if key_env else "key_env", None)
+    if not spec.get("api"):
+        exe = bin or spec.get("bin") or shutil.which(name)
+        if exe:
+            path = os.path.expanduser(exe)
+            spec["bin"] = os.path.abspath(path) if os.sep in path or "/" in path else (
+                shutil.which(path) or path)
+    from_spec(name, spec)
+    return spec
+
+
+def remove(cfg, name: str) -> bool:
+    """Drop a user worker and every place the config uses it; False if it is not one."""
+    if name not in (cfg.custom_workers or {}):
+        return False
+    del cfg.custom_workers[name]
+    mine = lambda m: m.partition(":")[0] == name  # noqa: E731
+    cfg.fallback_models = [m for m in cfg.fallback_models if not mine(m)]
+    cfg.council_models = [m for m in cfg.council_models if not mine(m)]
+    if mine(cfg.handoff_agent):
+        cfg.handoff_agent = type(cfg)().handoff_agent
+    return True
 
 
 def custom(cfg) -> dict:
@@ -209,10 +321,18 @@ def find(cfg, v: Vendor) -> str | None:
     return shutil.which(v.bin or getattr(cfg, f"{v.name}_bin", "") or v.name)
 
 
+def ready(cfg, v: Vendor) -> bool:
+    """CLI found, or the API worker's key available."""
+    return api_key(v) is not None if v.api else bool(find(cfg, v))
+
+
 def status(cfg) -> list[dict]:
     return [{"name": v.name, "label": v.label, "brand": v.brand or v.label,
-             "install": v.install, "installed": bool(find(cfg, v)), "custom": v.custom,
-             "worker": bool(v.worker), "agent": bool(v.agent)}
+             "install": v.install or (f"set {v.key_env}" if v.key_env else
+                                      f"put the key in {v.key_file}" if v.key_file else ""),
+             "installed": ready(cfg, v), "custom": v.custom, "api": v.api,
+             "model": v.default_model, "worker": bool(v.worker or v.api),
+             "agent": bool(v.agent)}
             for v in all_vendors(cfg).values()]
 
 

@@ -355,6 +355,11 @@ WORKER_WARNING = """\
     your home directory or use the network if it is allowed to."""
 
 
+API_WARNING = """\
+  ! Prompts and the material HALO gives this worker (specs, failing code, council files)
+    are sent to {api}. The key stays in {where} - it is never written to the config."""
+
+
 def _load_spec(text: str) -> dict:
     if text.startswith("@"):
         with open(os.path.expanduser(text[1:]), encoding="utf-8") as fh:
@@ -365,13 +370,14 @@ def _load_spec(text: str) -> dict:
 def cmd_workers(a, cfg):
     if a.action in (None, "list"):
         for s in vendors.status(cfg):
-            roles = "+".join(r for r in ("worker", "agent") if s[r])
+            roles = "api" if s["api"] else "+".join(r for r in ("worker", "agent") if s[r])
             print(f"  {s['name']:<10} {'yours' if s['custom'] else 'built in':<9} "
-                  f"{'installed' if s['installed'] else 'not found':<10} {roles:<13} {s['label']}")
+                  f"{('ready' if s['installed'] else 'no key') if s['api'] else ('installed' if s['installed'] else 'not found'):<10} {roles:<13} {s['label']}")
         for p in vendors.problems(cfg):
             print(f"  ✗ ignored: {p}")
         print("\nadd one: halo workers add opencode   (presets: "
               + ", ".join(vendors.PRESETS) + ")\n"
+              "     or: halo workers add NAME --api https://host/v1 --key-env VAR --model M\n"
               "     or: halo workers add NAME --spec '{\"worker\": [...], ...}' (see vendors.py)")
         return 0
     if not a.name:
@@ -379,20 +385,17 @@ def cmd_workers(a, cfg):
         return 2
     name = a.name
     if a.action == "remove":
-        if name not in cfg.custom_workers:
+        if not vendors.remove(cfg, name):
             print(f"{name} is not one of your workers", file=sys.stderr)
             return 2
-        del cfg.custom_workers[name]
-        mine = lambda m: m.partition(":")[0] == name  # noqa: E731
-        cfg.fallback_models = [m for m in cfg.fallback_models if not mine(m)]
-        cfg.council_models = [m for m in cfg.council_models if not mine(m)]
-        if mine(cfg.handoff_agent):
-            cfg.handoff_agent = config.Config.handoff_agent
         config.save(cfg)
         print(f"  ✓ removed {name} (and from fallback/council/handoff where it was used)")
         return 0
     if a.action == "test":
-        print(f"testing {name}: a one-word question, then a toy handoff (2 bugs, check must pass)")
+        v, _ = vendors.split(name, cfg)
+        agent = bool(v and v.agent and not a.no_agent)
+        print(f"testing {name}: a one-word question"
+              + (", then a toy handoff (2 bugs, check must pass)" if agent else ""))
         r = handoff.probe(cfg, name, agent=not a.no_agent)
         if r["status"] == "error":
             print(f"  ✗ {r['error']}", file=sys.stderr)
@@ -401,33 +404,26 @@ def cmd_workers(a, cfg):
             detail = s.get("error") or s.get("reason") or s.get("answer") or s.get("status") or ""
             print(f"  {'✓' if s['ok'] else '✗'} {step:<6} {s.get('seconds', '?')}s  {detail}"[:300])
         if r["status"] == "passed":
-            print(f"\n{name} works. Use it: halo handoff -a {name} ... | fallback/council in "
-                  f"the config | handoff_agent: \"{name}\"")
+            print(f"\n{name} works. Use it: "
+                  + (f"halo handoff -a {name} ... | handoff_agent: \"{name}\" | " if v.agent else "")
+                  + f"\"{name}\" in fallback_models or council_models"
+                  + (" (an API is text only: no handoff)" if v.api else ""))
         return 0 if r["status"] == "passed" else 1
 
     # add
-    if name in vendors.BUILTIN:
-        print(f"{name} is built in already", file=sys.stderr)
-        return 2
     try:
-        spec = _load_spec(a.spec) if a.spec else json.loads(json.dumps(vendors.PRESETS[name]))
-    except KeyError:
-        print(f"no preset for {name}: give its commands with --spec (presets: "
-              f"{', '.join(vendors.PRESETS)})", file=sys.stderr)
-        return 2
-    except (OSError, ValueError) as e:
+        spec = vendors.build_spec(name, spec=_load_spec(a.spec) if a.spec else None,
+                                  api=a.api, key_env=a.key_env, key_file=a.key_file,
+                                  model=a.model, bin=a.bin)
+    except OSError as e:
         print(f"--spec: {e}", file=sys.stderr)
         return 2
-    exe = a.bin or spec.get("bin") or shutil.which(name)
-    if exe:
-        spec["bin"] = os.path.abspath(os.path.expanduser(exe)) if os.sep in exe else (
-            shutil.which(exe) or exe)
-    try:
-        vendors.from_spec(name, spec)
     except ValueError as e:
         print(f"✗ {e}", file=sys.stderr)
         return 2
-    print(WORKER_WARNING)
+    v = vendors.from_spec(name, spec)
+    print(API_WARNING.format(api=v.api, where=f"${v.key_env}" if v.key_env else
+                             v.key_file or "(none: no key)") if v.api else WORKER_WARNING)
     if not a.yes:
         if not sys.stdin.isatty():
             print("  (pass -y to confirm without a terminal)", file=sys.stderr)
@@ -436,7 +432,13 @@ def cmd_workers(a, cfg):
             return 1
     cfg.custom_workers[name] = spec
     config.save(cfg)
-    found = vendors.find(cfg, vendors.from_spec(name, spec))
+    if v.api:
+        print(f"  ✓ added {name} ({v.api})" + ("" if vendors.ready(cfg, v) else
+              f" - but its key is missing: " + (f"set {v.key_env}" if v.key_env
+                                                 else f"put it in {v.key_file}")))
+        print(f"  next: halo workers test {name}" + ("" if v.default_model else ":<model>"))
+        return 0
+    found = vendors.find(cfg, v)
     print(f"  ✓ added {name}" + (f" ({found})" if found else
                                  f" - but its CLI is not on PATH yet"
                                  + (f": {spec['install']}" if spec.get("install") else "")
@@ -562,6 +564,11 @@ def main(argv=None):
     s.add_argument("name", nargs="?", metavar="NAME[:MODEL]")
     s.add_argument("--spec", help="add: the worker as JSON, or @file.json (default: preset)")
     s.add_argument("--bin", help="add: path of the CLI (default: NAME on PATH)")
+    s.add_argument("--api", metavar="URL",
+                   help="add: an OpenAI-compatible API instead of a CLI, e.g. https://host/v1")
+    s.add_argument("--key-env", metavar="VAR", help="add: env variable holding the API key")
+    s.add_argument("--key-file", metavar="PATH", help="add: file holding the API key")
+    s.add_argument("--model", help="add: default model of an API worker")
     s.add_argument("--no-agent", action="store_true", help="test: skip the toy handoff")
     s.add_argument("-y", "--yes", action="store_true", help="add: no confirmation")
     s.set_defaults(fn=cmd_workers)

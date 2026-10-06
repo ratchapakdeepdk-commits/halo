@@ -14,7 +14,8 @@ import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import __version__, catalog, config, doctor, integration, ledger, llm, tasks, vendors
+from . import (__version__, catalog, config, doctor, handoff, integration, ledger, llm, tasks,
+               vendors)
 
 TOKEN = secrets.token_urlsafe(16)
 _job = {"name": None, "log": [], "running": False, "started": 0}
@@ -51,7 +52,7 @@ def _login_path() -> None:
 
 
 def _council_choices(cfg, installed: list[str]) -> list[str]:
-    return [n for n, v in vendors.all_vendors(cfg).items() if v.worker] + installed
+    return [n for n, v in vendors.all_vendors(cfg).items() if v.worker or v.api] + installed
 
 
 def _handoff_choices(cfg) -> list[str]:
@@ -102,6 +103,9 @@ def status() -> dict:
         "agents": [dict(a, name=n, hint=getattr(vendors.get(n), "install", ""))
                    for n, a in integration.status()["agents"].items()],
         "vendors": vendors.status(cfg),
+        "presets": [{"name": n, "label": p.get("label", n), "api": bool(p.get("api"))}
+                    for n, p in vendors.PRESETS.items()],
+        "worker_problems": vendors.problems(cfg),
         "council": {"members": tasks.council_models(cfg),
                     "choices": _council_choices(cfg, installed)},
         "handoff": {"agent": cfg.handoff_agent, "rounds": cfg.handoff_rounds,
@@ -133,6 +137,58 @@ def _start_job(name: str, fn):
 
     threading.Thread(target=run, daemon=True).start()
     return True
+
+
+def _probe_job(model):
+    def run(log):
+        log(f"testing {model}: a one-word question, then a toy handoff if it can take one ...")
+        r = handoff.probe(config.load(), model)
+        if r["status"] == "error":
+            log(r["error"])
+            return
+        for step, st in r["steps"].items():
+            detail = st.get("error") or st.get("reason") or st.get("answer") or st.get("status")
+            log(f"{'✓' if st['ok'] else '✗'} {step}: {st.get('seconds', '?')}s  {detail or ''}"[:300])
+        log(f"{model}: {'works' if r['status'] == 'passed' else 'FAILED - do not rely on it yet'}")
+    return run
+
+
+def _workers_post(body: dict):
+    """(response, code) for /api/workers: add / remove / test a worker."""
+    cfg = config.load()
+    action, name = body.get("action"), str(body.get("name") or "").strip()
+    if action == "test":
+        if not llm.is_cloud(name, cfg):
+            return {"error": f"{name} is not a worker"}, 400
+        ok = _start_job(f"test {name}", _probe_job(name))
+        return {"started": ok}, 200 if ok else 409
+    if action == "remove":
+        if not vendors.remove(cfg, name):
+            return {"error": f"{name} is not one of your workers"}, 400
+        config.save(cfg)
+        return status(), 200
+    if action != "add":
+        return {"error": "action must be add, remove or test"}, 400
+    if body.get("understood") is not True:
+        return {"error": "tick the box: HALO cannot sandbox a worker you add"}, 400
+    try:
+        spec = body.get("spec")
+        if isinstance(spec, str):
+            spec = json.loads(spec) if spec.strip() else None
+        preset = body.get("preset") or ""
+        if spec is None and preset:
+            if preset not in vendors.PRESETS:
+                return {"error": f"no preset {preset}"}, 400
+            spec = vendors.PRESETS[preset]
+        spec = vendors.build_spec(name, spec=spec, api=body.get("api") or "",
+                                  key_env=body.get("key_env") or "",
+                                  key_file=body.get("key_file") or "",
+                                  model=body.get("model") or "", bin=body.get("bin") or "")
+    except ValueError as e:
+        return {"error": str(e)}, 400
+    cfg.custom_workers[name] = spec
+    config.save(cfg)
+    return status(), 200
 
 
 def _tune(log):
@@ -239,6 +295,9 @@ class Handler(BaseHTTPRequestHandler):
             cfg.handoff_agent, cfg.handoff_rounds = agent, rounds
             config.save(cfg)
             self._send(status())
+        elif self.path == "/api/workers":
+            resp, code = _workers_post(body)
+            self._send(resp, code=code)
         elif self.path == "/api/pull":
             allowed = {m.name for m in catalog.CATALOG}
             names = [n for n in body.get("names", []) if n in allowed]
@@ -304,6 +363,10 @@ font:inherit;font-weight:600;cursor:pointer}
 .big{font-size:26px;font-weight:650;font-variant-numeric:tabular-nums}
 .stat{display:flex;gap:22px;flex-wrap:wrap}.stat div span{display:block;color:var(--muted);font-size:12.5px}
 label{display:block;font-size:13px;color:var(--muted);margin:8px 0 4px}
+input.tx,textarea.tx{width:100%;box-sizing:border-box;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:inherit}
+textarea.tx{font:12.5px/1.45 var(--mono);min-height:110px;resize:vertical}
+.warn{border:1px solid var(--bad);border-radius:8px;padding:8px 10px;font-size:13px;margin:10px 0 0}
+.chk{display:flex;gap:8px;align-items:center;color:var(--text);margin-top:8px}
 select{width:100%;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:inherit}
 .btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 .btn{border:1px solid var(--line);background:var(--bg);color:var(--text);padding:8px 14px;border-radius:8px;
@@ -343,6 +406,34 @@ max-height:260px;overflow:auto;white-space:pre-wrap;margin:10px 0 0}
   </div>
   <div class="btns"><button class="btn primary" onclick="saveHandoff()">Save handoff</button></div>
   <div id="handoffs"></div>
+ </section>
+ <section class="card wide"><h2>Workers</h2>
+  <p class="note" style="margin:0 0 8px">Who HALO can hand work to besides local models: a CLI agent (worker and/or handoff agent) or an OpenAI-compatible API (text only: fallback tier, council). Test a worker before relying on it.</p>
+  <div id="workers"></div>
+  <details id="w-add" style="margin-top:10px"><summary style="cursor:pointer">Add a worker</summary>
+   <div class="sel3" style="margin-top:8px">
+    <div><label for="w-name">Name</label><input class="tx" id="w-name" placeholder="e.g. opencode" autocomplete="off"></div>
+    <div><label for="w-kind">Kind</label><select id="w-kind" onchange="wKind()">
+     <option value="preset">Preset</option><option value="api">OpenAI-compatible API</option><option value="cli">Other CLI (JSON spec)</option></select></div>
+   </div>
+   <div id="w-f-preset"><label for="w-preset">Preset</label><select id="w-preset" onchange="wPreset()"></select></div>
+   <div id="w-f-api" hidden><div class="sel3">
+    <div><label for="w-api">Base URL</label><input class="tx" id="w-api" placeholder="https://api.example.com/v1"></div>
+    <div><label for="w-model">Default model</label><input class="tx" id="w-model" placeholder="optional"></div>
+    <div><label for="w-kenv">Key: environment variable</label><input class="tx" id="w-kenv" placeholder="EXAMPLE_API_KEY"></div>
+    <div><label for="w-kfile">or key file</label><input class="tx" id="w-kfile" placeholder="~/.config/example/key"></div></div>
+    <p class="note">The key itself is never saved, only where to find it.</p></div>
+   <div id="w-f-cli" hidden><label for="w-spec">Spec (see the top of halo/vendors.py)</label>
+    <textarea class="tx" id="w-spec" spellcheck="false">{"worker": ["{bin}", "--print", "{model_args}"],
+ "agent": ["{bin}", "--yes", "{model_args}"],
+ "model_args": ["--model", "{model}"],
+ "output": "text"}</textarea>
+    <label for="w-bin">CLI path (optional)</label><input class="tx" id="w-bin" placeholder="found on PATH by name"></div>
+   <div class="warn" id="w-warn"></div>
+   <label class="chk"><input type="checkbox" id="w-ok"> I understand</label>
+   <div class="btns"><button class="btn primary" onclick="addWorker()">Add worker</button></div>
+  </details>
+  <pre id="wlog" hidden></pre>
  </section>
  <section class="card wide"><h2>Savings</h2><div class="stat" id="stats"></div>
   <p class="note">Local tokens are measured. The frontier figure is an upper bound (it assumes the frontier would have read the whole input).</p></section>
@@ -410,7 +501,8 @@ function render(s){S=s;$("ver").textContent="v"+s.version;
  const m=s.models,inst=m.installed;
  if(!document.activeElement||document.activeElement.tagName!=="SELECT"){
   opts($("s-model"),inst,m.model);opts($("s-code"),inst,m.code_model,"(same as digest)");opts($("s-fb"),inst,m.fallback_models[0]||"","(none)")}
- const j=s.job,lg=$("log");if(j.name){lg.hidden=false;lg.textContent=j.log.join("\n");lg.scrollTop=lg.scrollHeight}
+ const j=s.job,wt=(j.name||"").startsWith("test "),lg=$(wt?"wlog":"log");if(j.name){lg.hidden=false;lg.textContent=j.log.join("\n");lg.scrollTop=lg.scrollHeight}
+ renderWorkers(s);
  $("b-tune").disabled=$("b-doc").disabled=$("b-pull").disabled=j.running;
  if(!document.querySelector("#cat input:checked:not(:disabled)")) renderCat(s.catalog)}
 function renderCat(list){$("cat").innerHTML=`<table class="cat">`+list.map(m=>{
@@ -432,6 +524,32 @@ async function saveCouncil(){const members=[...document.querySelectorAll("#counc
 async function saveHandoff(){const r=await post("/api/handoff",{agent:$("h-agent").value,rounds:Number($("h-rounds").value)});
  if(r.error)alert(r.error);else render(r)}
 async function job(name){await post("/api/"+name);refresh()}
+function renderWorkers(s){
+ $("workers").innerHTML=s.vendors.map(v=>{const roles=v.api?"API · text only":[v.worker&&"worker",v.agent&&"handoff agent"].filter(Boolean).join(" + ");
+  const state=v.installed?(v.api?"ready":"installed"):(v.api?"no key":"not installed");
+  return row(`${dot(v.installed)}<span class="nm">${esc(v.name)}</span> <span class="sub">${esc(v.label)}${v.custom?" · yours":""}</span>`,
+   `<span class="sub">${esc(roles)} · ${esc(state)}${v.installed?"":(v.install?" — "+esc(v.install):"")}</span>
+    ${v.installed?`<button class="btn" onclick="wTest('${esc(v.name)}')" ${s.job.running?"disabled":""}>Test</button>`:""}
+    ${v.custom?`<button class="btn" onclick="wRemove('${esc(v.name)}')">Remove</button>`:""}`)}).join("")
+  +(s.worker_problems||[]).map(p=>`<p class="sub">✗ ignored (fix it in the config): ${esc(p)}</p>`).join("");
+ const ps=$("w-preset");if(document.activeElement!==ps&&ps.options.length!==s.presets.length)
+  ps.innerHTML=s.presets.map(p=>`<option value="${esc(p.name)}">${esc(p.name)} — ${esc(p.label)}</option>`).join("");
+ if(!$("w-warn").textContent)wKind()}
+function wIsApi(){const k=$("w-kind").value;return k==="api"||k==="preset"&&!!S.presets.find(p=>p.name===$("w-preset").value)?.api}
+function wKind(){const k=$("w-kind").value;for(const f of["preset","api","cli"])$("w-f-"+f).hidden=f!==k;
+ if(k==="preset")wPreset();else wWarn()}
+function wPreset(){const n=$("w-name");if(!n.value||S.presets.some(p=>p.name===n.value))n.value=$("w-preset").value;wWarn()}
+function wWarn(){$("w-warn").textContent=wIsApi()?"Prompts and the material HALO gives this worker (specs, failing code, council files) are sent to that API."
+  :"HALO cannot sandbox a CLI you add. Whatever its own permissions allow runs as you, inside a scratch copy of the project (secrets left out). Only files inside the sector come back, and only after the check passes, but the CLI itself can still read your home directory or use the network if it is allowed to. Deny shell and outside directories in its own settings."}
+async function addWorker(){const k=$("w-kind").value,b={action:"add",name:$("w-name").value.trim(),understood:$("w-ok").checked};
+ if(k==="preset")b.preset=$("w-preset").value;
+ if(k==="api")Object.assign(b,{api:$("w-api").value.trim(),model:$("w-model").value.trim(),key_env:$("w-kenv").value.trim(),key_file:$("w-kfile").value.trim()});
+ if(k==="cli")Object.assign(b,{spec:$("w-spec").value,bin:$("w-bin").value.trim()});
+ const r=await post("/api/workers",b);if(r.error){alert(r.error);return}
+ $("w-ok").checked=false;$("w-add").open=false;render(r)}
+async function wRemove(name){if(!confirm("Remove "+name+"?"))return;const r=await post("/api/workers",{action:"remove",name});if(r.error)alert(r.error);else render(r)}
+async function wTest(name){const m=prompt("Test which model? Leave as is for the default.",name);if(!m)return;
+ const r=await post("/api/workers",{action:"test",name:m});if(r.error)alert(r.error);refresh()}
 $("council").addEventListener("change",()=>councilDirty=true);
 render(__INIT__);setInterval(refresh,2500);
 </script></body></html>

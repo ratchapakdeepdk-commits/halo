@@ -237,6 +237,20 @@ halo workers test opencode:halo/coder   # one-word question + a toy handoff whos
 halo workers remove mycli
 ```
 
+An OpenAI-compatible API can be a worker too (text only: fallback tier or council, never a
+handoff agent). Only *where* the key is gets stored, never the key, and it is only sent over
+https or to this machine:
+
+```sh
+halo workers add deepseek            # preset: https://api.deepseek.com/v1, $DEEPSEEK_API_KEY
+halo workers add or --api https://openrouter.ai/api/v1 --key-env OPENROUTER_API_KEY
+halo workers add local --api http://127.0.0.1:8820/v1 --key-file ~/.local/share/halo/api_token --model fast
+```
+
+All of this is also in the control panel (`halo gui`): the **Workers** card lists every worker
+with Test / Remove buttons and has an Add form (preset, API or CLI spec) that shows the
+matching warning and needs it ticked.
+
 Then use it like a built-in one: `halo handoff -a opencode:halo/coder ...`,
 `"handoff_agent": "opencode:halo/coder"`, or in `fallback_models` / `council_models`.
 `opencode` pointed at a local model (a provider in opencode's own config, e.g. the HALO local

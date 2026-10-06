@@ -329,7 +329,7 @@ def probe(cfg: Config, model: str, *, agent: bool = True) -> dict:
         return {"status": "error", "error": f"{model} is not a worker: one of "
                                             f"{', '.join(vendors.names(cfg))}"}
     steps = {}
-    if v.worker:
+    if v.worker or v.api:
         t0 = time.time()
         usage = llm.Usage()
         try:
