@@ -28,6 +28,10 @@ class LocalModelError(RuntimeError):
     pass
 
 
+class VendorTimeout(LocalModelError):
+    """A vendor CLI ran out of time; its partial work in the workspace is still there."""
+
+
 class Usage:
     def __init__(self):
         self.prompt_tokens = 0
@@ -80,6 +84,31 @@ WORKER_RULES = (
 )
 
 
+def _run_group(cmd: list, stdin: str, timeout: int, cwd: str, env: dict):
+    """subprocess.run in its own process group: on timeout the whole group is killed, so a
+    CLI's helper processes cannot keep editing the workspace afterwards. None on timeout."""
+    kw = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
+          else {"start_new_session": True})
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, cwd=cwd, env=env, **kw)
+    try:
+        out, err = proc.communicate(stdin, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True)
+        else:
+            import signal
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+        proc.kill()
+        proc.communicate()
+        return None
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+
+
 def _run_vendor(cfg: Config, model: str, role: str, prompt: str, work: str,
                 usage: Usage | None, timeout: int, check: str = "") -> str:
     """Run vendor `model` ("name[:model]") in `role` "worker" or "agent" with `work` as its
@@ -114,11 +143,9 @@ def _run_vendor(cfg: Config, model: str, role: str, prompt: str, work: str,
             extra.update(v.check_env)
         for k, val in extra.items():
             env[k] = vendors.fill(val, vals)
-        try:
-            p = subprocess.run(cmd, input="" if pfile else prompt, capture_output=True,
-                               text=True, timeout=timeout, cwd=work, env=env)
-        except subprocess.TimeoutExpired:
-            raise LocalModelError(f"{v.name} timed out after {timeout}s") from None
+        p = _run_group(cmd, "" if pfile else prompt, timeout, work, env)
+        if p is None:
+            raise VendorTimeout(f"{v.name} timed out after {timeout}s")
     try:
         answer, tin, tout, err = vendors.parse(v, p.stdout)
     except (ValueError, KeyError, AttributeError, TypeError):

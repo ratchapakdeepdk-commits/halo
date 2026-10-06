@@ -97,6 +97,18 @@ if __name__ == "__main__":
     unittest.main()
 
 
+# Fixes calc.py, leaves a helper process behind, then hangs: like a CLI that runs past its
+# time after doing the work.
+FAKE_HANG = r'''import os, subprocess, sys, time
+sys.stdin.read()
+with open("calc.py", "w") as fh:
+    fh.write("def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n")
+subprocess.Popen([sys.executable, "-c",
+                  "import time; time.sleep(3); open(%r, 'w').write('alive')" % os.environ["FAKE_MARK"]])
+time.sleep(60)
+'''
+
+
 class TestSpecs(unittest.TestCase):
     def ok(self, **kw):
         return {"worker": ["{bin}"], **kw}
@@ -462,3 +474,17 @@ class TestGuiWorkers(Base):
             r, code = self.post(body)
             self.assertEqual(code, 400, body)
             self.assertIn("error", r)
+
+
+class TestTimeout(Base):
+    def test_timeout_still_runs_the_check_and_kills_the_group(self):
+        import time
+        exe = make_cli(os.path.join(self.dir, "bin"), "hang", FAKE_HANG)
+        self.cfg.custom_workers = {"hang": {"agent": ["{bin}"], "bin": exe}}
+        self.cfg.handoff_timeout = 3
+        mark = os.path.join(self.dir, "helper-alive")
+        with mock.patch.dict(os.environ, {"FAKE_MARK": mark}):
+            r = handoff.probe(self.cfg, "hang")
+        self.assertEqual(r["steps"]["agent"]["status"], "passed", r)
+        time.sleep(4)
+        self.assertFalse(os.path.exists(mark), "the CLI's helper outlived the timeout")

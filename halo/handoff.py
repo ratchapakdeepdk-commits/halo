@@ -212,6 +212,7 @@ def handoff(cfg: Config, task: str, sector: list[str], *, workdir: str = ".",
         before = snapshot(base)
 
         status, reason, summary, out, feedback, done = "failed", "", "", "", "", 0
+        timeouts = 0
         for done in range(1, rounds + 1):
             runs = llm.agent_runs_check(vendors.split(agent, cfg)[0], check)
             prompt = AGENT_RULES.format(
@@ -225,6 +226,13 @@ def handoff(cfg: Config, task: str, sector: list[str], *, workdir: str = ".",
             try:
                 summary = llm.cli_agent(cfg, prompt, agent, proj, usage, cfg.handoff_timeout,
                                         check=check)
+            except llm.VendorTimeout as e:
+                # Its edits so far are still in the copy: the check decides, like any round.
+                timeouts += 1
+                if not check:
+                    status, reason = "error", str(e)
+                    break
+                summary = f"(round {done} stopped: {e})"
             except llm.LocalModelError as e:
                 status, reason = "error", str(e)
                 break
@@ -277,6 +285,7 @@ def handoff(cfg: Config, task: str, sector: list[str], *, workdir: str = ".",
         status, reason = "failed", "the agent changed nothing inside the sector"
     result = {"status": status, "agent": agent, "rounds": done, "sector": sector,
               "agent_ran_check": llm.agent_runs_check(vendors.split(agent, cfg)[0], check),
+              **({"timed_out_rounds": timeouts} if timeouts else {}),
               "applied": applied, "diffstat": stat, "agent_summary": summary[-1500:]}
     if reason:
         result["reason"] = reason
