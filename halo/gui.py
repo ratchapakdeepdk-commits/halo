@@ -100,8 +100,11 @@ def status() -> dict:
         "models": {"model": cfg.model, "code_model": cfg.code_model,
                    "fallback_models": cfg.fallback_models, "installed": installed},
         "claude": dict(integration.status(), mcp_registered=_mcp_registered()),
-        "agents": [dict(a, name=n, hint=getattr(vendors.get(n), "install", ""))
+        "agents": [dict(a, name=n, hint=getattr(vendors.get(n), "install", "") if not a["custom"]
+                        else f"nothing at {os.path.dirname(a['mcp_file'] or a['rules'])}")
                    for n, a in integration.status()["agents"].items()],
+        "agent_presets": [{"name": n, "title": p["title"]} for n, p in integration.PRESETS.items()
+                          if n not in (cfg.custom_agents or {})],
         "vendors": vendors.status(cfg),
         "presets": [{"name": n, "label": p.get("label", n), "api": bool(p.get("api"))}
                     for n, p in vendors.PRESETS.items()],
@@ -265,7 +268,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send(status())
         elif self.path == "/api/agent":
             name, action = body.get("name"), body.get("action")
-            if name not in integration.AGENTS or action not in ("add", "remove"):
+            known = integration.all_agents(config.load())
+            if action == "preset" and name in integration.PRESETS and name not in known:
+                cfg = config.load()  # a preset becomes a custom agent, then is added
+                cfg.custom_agents = {**(cfg.custom_agents or {}),
+                                     name: integration.build_spec(name)}
+                config.save(cfg)
+                known, action = integration.all_agents(cfg), "add"
+            if name not in known or action not in ("add", "remove", "forget"):
                 self._send({"error": "bad agent or action"}, code=400)
                 return
             if action == "add":
@@ -275,7 +285,7 @@ class Handler(BaseHTTPRequestHandler):
                                          f"installed and logged in?)"}, code=500)
                     return
             else:
-                integration.uninstall(name)
+                integration.uninstall(name, forget=action == "forget")
             self._send(status())
         elif self.path == "/api/council":
             cfg = config.load()
@@ -393,7 +403,7 @@ max-height:260px;overflow:auto;white-space:pre-wrap;margin:10px 0 0}
  </section>
  <section class="card"><h2>Local model server</h2><div id="sys"></div></section>
  <section class="card"><h2>Agents</h2><div id="agents"></div>
-  <p class="note">Add = the agent gets HALO's tools (local delegation in Hybrid; council and handoff in both modes). Takes effect in new sessions.</p></section>
+  <p class="note">Add = the agent gets HALO's tools (local delegation in Hybrid; council and handoff in both modes). Takes effect in new sessions. Any other agent: <code>halo agents add NAME --mcp-file ...</code> (see <code>halo agents</code>).</p></section>
  <section class="card wide"><h2>Council (frontier + frontier)</h2>
   <p class="note" style="margin:0 0 8px">Who answers when an agent asks the council (halo_council / <code>halo council</code>) for a second opinion. In Frontier only mode local models are skipped.</p>
   <div id="council"></div>
@@ -471,10 +481,16 @@ function render(s){S=s;$("ver").textContent="v"+s.version;
  const h=s.hardware;
  $("sys").innerHTML=row("Ollama",dot(s.ollama.ok)+(s.ollama.ok?"running":"not reachable"))+row("URL",esc(s.ollama.url))
   +row("Hardware",esc(h.detail))+row("Model budget",h.gib.toFixed(0)+" GiB");
- $("agents").innerHTML=s.agents.map(a=>`<div class="row"><span>${dot(a.enabled&&a.cli)}${esc(a.title)}</span>`
+ $("agents").innerHTML=s.agents.map(a=>`<div class="row"><span>${dot(a.enabled&&a.cli)}${esc(a.title)}`
+  +(a.kind==="cli"?` <span class="sub">(shell commands, no MCP)</span>`:"")+`</span><span>`
   +(!a.cli?`<span class="sub" title="install it, log in once, then reload">not installed — <code>${esc(a.hint)}</code></span>`
    :a.enabled?`<button class="btn" onclick="agent('${a.name}','remove')">Remove</button>`
-   :`<button class="btn primary" onclick="agent('${a.name}','add')">Add</button>`)+`</div>`).join("");
+   :`<button class="btn primary" onclick="agent('${a.name}','add')">Add</button>`)
+  +(a.custom?` <button class="btn" title="remove it and its settings from HALO" onclick="agent('${a.name}','forget')">Forget</button>`:"")
+  +`</span></div>`).join("")
+  +(s.agent_presets.length?`<div class="row"><span class="sub">More agents</span><span>`
+  +s.agent_presets.map(p=>`<button class="btn" onclick="agent('${p.name}','preset')">+ ${esc(p.title)}</button>`).join(" ")
+  +`</span></div>`:"");
  const on=s.agents.filter(a=>a.enabled&&a.cli).map(a=>a.title);
  $("modenote").textContent=on.length?"Takes full effect in new "+on.join(" / ")+" sessions."
   :"No agent has HALO yet — add one under Agents.";

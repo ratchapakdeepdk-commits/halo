@@ -302,7 +302,11 @@ def cmd_setup(a, cfg):
     if not agents and not a.yes and sys.stdin is not None and sys.stdin.isatty():
         agents = choose_agents()
     if agents:
-        integration.install(agents, cfg.mode)
+        try:
+            integration.install(agents, cfg.mode)
+        except ValueError as e:
+            print(f"✗ {e}", file=sys.stderr)
+            return 2
     print("\nNext: `halo doctor` to benchmark, `halo stats` to see savings.")
     return 0
 
@@ -327,22 +331,62 @@ def choose_agents() -> list[str]:
 
 
 def cmd_agents(a, cfg):
-    bad = [n for n in a.names if n not in integration.AGENTS]
-    if bad or (a.action and not a.names):
-        print(f"choose agents from: {', '.join(integration.AGENTS)}", file=sys.stderr)
+    if a.action in ("add", "remove") and not a.names:
+        print(f"halo agents {a.action}: name an agent (built in: {', '.join(integration.AGENTS)}; "
+              f"presets: {', '.join(integration.PRESETS)})", file=sys.stderr)
         return 2
     if a.action == "add":
-        return integration.install(a.names, cfg.mode)
+        known = integration.all_agents(cfg)
+        flags = any((a.preset, a.mcp_file, a.mcp_add, a.cli_tools, a.rules, a.entry))
+        for n in a.names:
+            if n in integration.AGENTS and flags:
+                print(f"{n} is built in: `halo agents add {n}` takes no options", file=sys.stderr)
+                return 2
+            if n in integration.AGENTS or (n in known and not flags):
+                continue
+            try:
+                entry = json.loads(a.entry) if a.entry else None
+                spec = integration.build_spec(
+                    n, preset=a.preset or "", mcp_file=a.mcp_file or "", mcp_key=a.mcp_key or "",
+                    entry=entry, rules=a.rules or "", title=a.title or "",
+                    cli=(a.mcp_add or "").split()[0] if a.mcp_add else "",
+                    add=(a.mcp_add.split()[1:] if a.mcp_add else None),
+                    remove=(a.mcp_remove.split()[1:] if a.mcp_remove else None),
+                    tools="cli" if a.cli_tools else "")
+            except ValueError as e:
+                print(f"✗ {e}", file=sys.stderr)
+                return 2
+            cfg.custom_agents = {**(cfg.custom_agents or {}), n: spec}
+            config.save(cfg)
+        try:
+            return integration.install(a.names, cfg.mode)
+        except ValueError as e:
+            print(f"✗ {e}", file=sys.stderr)
+            return 2
     if a.action == "remove":
         for n in a.names:
-            integration.uninstall(n)
-            print(f"  ✓ HALO removed from {integration.AGENTS[n].title}")
+            try:
+                title = integration.get(n, cfg).title
+                integration.uninstall(n, forget=True)
+            except ValueError as e:
+                print(f"✗ {e}", file=sys.stderr)
+                return 2
+            print(f"  ✓ HALO removed from {title}")
         return 0
     st = integration.status()
     print(f"mode: {st['mode']}")
     for n, s in st["agents"].items():
-        print(f"  {n:<7} {s['title']:<12} installed: {'yes' if s['cli'] else 'no ':<4} "
-              f"uses HALO: {'yes' if s['enabled'] else 'no ':<4} rule: {'yes' if s['rule_installed'] else 'no'}")
+        kind = {"command": "mcp add", "json": "mcp json", "cli": "shell cmds"}[s["kind"]]
+        print(f"  {n:<9} {s['title']:<18} {'yours' if s['custom'] else 'built in':<9} "
+              f"{kind:<10} found: {'yes' if s['cli'] else 'no ':<4} "
+              f"uses HALO: {'yes' if s['enabled'] else 'no ':<4} "
+              f"rule: {'yes' if s['rule_installed'] else 'no' if s['rules'] else '-'}")
+    print("\nadd one: halo agents add cursor   (presets: " + ", ".join(integration.PRESETS) + ")\n"
+          "     or: halo agents add NAME --mcp-file ~/.tool/mcp.json [--mcp-key mcpServers] "
+          "[--rules ~/.tool/RULES.md]\n"
+          "     or: halo agents add NAME --mcp-add \"tool mcp add halo -- {cmd}\" "
+          "--mcp-remove \"tool mcp remove halo\" --rules FILE\n"
+          "     or: halo agents add NAME --cli-tools --rules FILE   (no MCP: it runs `halo ...`)")
     print("\nworker chain for code: "
           + " → ".join([cfg.code_model or cfg.model, *cfg.fallback_models]))
     return 0
@@ -556,17 +600,32 @@ def main(argv=None):
     s.add_argument("--code-model", help="model for `halo code` (default: same as --model)")
     s.add_argument("--url", help="Ollama URL (default: auto-detect)")
     s.add_argument("--claude", action="store_true", help="same as --agent claude")
-    s.add_argument("--agent", action="append", choices=list(integration.AGENTS),
-                   help="agent that should use HALO (repeatable): claude, codex, gemini")
+    s.add_argument("--agent", action="append",
+                   help="agent that should use HALO (repeatable): claude, codex, gemini or one "
+                        "added with `halo agents add`")
     s.add_argument("--worker", action="append", metavar="CLI[:MODEL]",
                    help="paid worker tier tried after the local models, e.g. codex, "
                         "claude:haiku, gemini:gemini-2.5-flash (repeatable)")
     s.add_argument("-y", "--yes", action="store_true")
     s.set_defaults(fn=cmd_setup)
 
-    s = sub.add_parser("agents", help="which agents (Claude Code / Codex / Gemini) use HALO")
-    s.add_argument("action", nargs="?", choices=["add", "remove"])
-    s.add_argument("names", nargs="*", metavar="AGENT", help="claude, codex, gemini")
+    s = sub.add_parser("agents", help="which agents in charge use HALO; add any MCP or shell agent")
+    s.add_argument("action", nargs="?", choices=["list", "add", "remove"])
+    s.add_argument("names", nargs="*", metavar="AGENT",
+                   help="claude, codex, gemini, a preset (" + ", ".join(integration.PRESETS)
+                        + ") or your own name")
+    s.add_argument("--preset", help="add: start from this preset's spec")
+    s.add_argument("--mcp-file", help="add: JSON file the agent reads its MCP servers from")
+    s.add_argument("--mcp-key", help="add: dotted key of the servers object (default mcpServers)")
+    s.add_argument("--entry", help='add: server entry as JSON, with "{command}", "{args}" or '
+                                   '"{argv}" (default {"command": "{command}", "args": "{args}"})')
+    s.add_argument("--mcp-add", metavar="CMDLINE",
+                   help='add: the agent\'s own command that registers an MCP server, with {cmd}')
+    s.add_argument("--mcp-remove", metavar="CMDLINE", help="add: the command that removes it")
+    s.add_argument("--cli-tools", action="store_true",
+                   help="add: the agent has no MCP; its rule tells it to run `halo` commands")
+    s.add_argument("--rules", help="add: the agent's global instructions file for the HALO rule")
+    s.add_argument("--title", help="add: display name")
     s.set_defaults(fn=cmd_agents)
 
     s = sub.add_parser("workers", help="vendor CLIs HALO can hand work to; add your own")

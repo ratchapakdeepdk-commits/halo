@@ -107,7 +107,7 @@ the coding tests, so expect more escalations back to the frontier model there.
 `halo doctor` measures real throughput instead of trusting that the GPU is used. An outdated
 driver can silently push Ollama onto a fallback backend that runs 15–20× slower.
 
-## Use from your agent — Claude Code, Codex CLI or Gemini CLI (MCP)
+## Use from your agent — Claude Code, Codex, Gemini, Cursor, opencode, ... (MCP)
 
 You choose which agent is in charge. The installer lists the agent CLIs it finds and asks
 which should use HALO; change it any time:
@@ -126,6 +126,35 @@ rule block in its global instructions file — `~/.claude/CLAUDE.md`, `~/.codex/
 every chosen agent at once. Tested with Claude Code and Codex CLI 0.153; the Gemini CLI
 integration follows its documented `gemini mcp add` / `GEMINI.md` and is covered by tests with
 a fake CLI only.
+
+**Any other agent can be in charge too.** Presets cover tools that read MCP servers from a
+JSON file: `cursor`, `windsurf`, `opencode`, `qwen` (Qwen Code) and `vscode` (Copilot). HALO
+adds a `halo` entry to that file and keeps everything else in it. Before its first edit it
+saves a `.halo-bak` copy. It will not rewrite a file with comments (JSONC), and prints the
+entry for you to paste instead. For anything else, describe the agent:
+
+```bash
+halo agents add cursor                                        # a preset
+halo agents add zed --mcp-file ~/.config/zed/settings.json --mcp-key context_servers
+halo agents add mytool --mcp-add "mytool mcp add halo -- {cmd}" \
+                       --mcp-remove "mytool mcp remove halo" --rules ~/.mytool/RULES.md
+halo agents add aider --cli-tools --rules ~/.aider/HALO.md    # no MCP: it runs `halo ...`
+halo agents remove cursor                                     # also forgets its settings
+```
+
+`--entry` changes the server entry's shape (JSON with `"{command}"`, `"{args}"` or
+`"{argv}"`). A `--cli-tools` agent gets a rule that teaches it `halo digest -f` and
+`halo handoff` as shell commands. A preset without a global rules file (Cursor, VS Code) gets
+the tools only, and their descriptions still say when to use them. `halo mode` switches the
+agents you add as well. Custom agents are kept under `custom_agents` in the config. The GUI's
+Agents card has a button for each preset and a Forget button for agents you added. Tested for
+real with opencode: after `halo agents add opencode`, `opencode mcp list` shows
+`halo connected`. The other presets follow each tool's documented config file, and only fake
+files in the tests cover them.
+
+The agent in charge and the worker are chosen separately, so any pair works: for example
+opencode in charge handing a job to Codex, or Claude in charge with opencode on a local model
+as the worker (see `halo workers` below).
 
 The agent gets six tools:
 

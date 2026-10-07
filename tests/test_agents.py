@@ -1,5 +1,6 @@
 """Any agent can be in charge (Claude Code / Codex / Gemini) and any vendor CLI can be a paid
 worker. Fake CLIs on PATH record their argv, stdin and environment."""
+import io
 import json
 import os
 import sys
@@ -269,6 +270,156 @@ class TestAgentChoice(Env):
     def test_unknown_agent(self):
         with self.assertRaises(ValueError):
             integration.install(["copilot"])
+
+
+class TestCustomAgents(Env):
+    """Any MCP-capable tool (or one that only runs shell commands) can be in charge."""
+
+    def setUp(self):
+        super().setUp()
+        self.home = os.path.join(self.d, "home")
+        self.log = os.path.join(self.d, "cli.log")
+        self._env = mock.patch.dict(os.environ, {
+            "HOME": self.home, "USERPROFILE": self.home, "FAKE_CLI_LOG": self.log,
+            "PATH": make_bin(self.d, ("claude", "mytool")) + os.pathsep + os.environ["PATH"]})
+        self._env.start()
+
+    def tearDown(self):
+        self._env.stop()
+        super().tearDown()
+
+    def add(self, name, **spec):
+        cfg = config.load()
+        cfg.custom_agents = {**cfg.custom_agents,
+                             name: integration.build_spec(name, **spec)}
+        config.save(cfg)
+        return integration.install([name])
+
+    def path(self, rel):
+        return os.path.join(self.home, rel)
+
+    def write(self, rel, text):
+        os.makedirs(os.path.dirname(self.path(rel)), exist_ok=True)
+        with open(self.path(rel), "w") as fh:
+            fh.write(text)
+
+    def read(self, rel):
+        with open(self.path(rel)) as fh:
+            return fh.read()
+
+    def test_json_preset_keeps_the_users_config(self):
+        self.write(".config/opencode/opencode.json",
+                   json.dumps({"provider": {"halo": {"x": 1}}, "mcp": {"other": {"y": 2}}}))
+        self.assertEqual(self.add("opencode"), 0)
+        data = json.loads(self.read(".config/opencode/opencode.json"))
+        self.assertEqual(data["provider"], {"halo": {"x": 1}})
+        self.assertEqual(data["mcp"]["other"], {"y": 2})
+        halo = data["mcp"]["halo"]
+        self.assertEqual((halo["type"], halo["enabled"]), ("local", True))
+        self.assertEqual(halo["command"], integration._server_cmd())  # {argv}: one list
+        self.assertTrue(os.path.exists(self.path(".config/opencode/opencode.json.halo-bak")))
+        self.assertIn(integration.BEGIN, self.read(".config/opencode/AGENTS.md"))
+        self.assertIn("halo_digest", self.read(".config/opencode/AGENTS.md"))
+
+        integration.set_mode("frontier")  # mode switches custom agents too (empty file: removed)
+        self.assertFalse(os.path.exists(self.path(".config/opencode/AGENTS.md")))
+        integration.set_mode("hybrid")
+        integration.uninstall("opencode", forget=True)
+        data = json.loads(self.read(".config/opencode/opencode.json"))
+        self.assertNotIn("halo", data["mcp"])
+        self.assertEqual(data["mcp"]["other"], {"y": 2})
+        self.assertNotIn("opencode", config.load().custom_agents)
+
+    def test_default_entry_and_nested_key(self):
+        self.add("zedlike", mcp_file="~/.zed/settings.json", mcp_key="ctx.servers")
+        data = json.loads(self.read(".zed/settings.json"))
+        cmd = integration._server_cmd()
+        self.assertEqual(data["ctx"]["servers"]["halo"], {"command": cmd[0], "args": cmd[1:]})
+        st = integration.status()["agents"]["zedlike"]
+        self.assertTrue(st["enabled"] and st["custom"] and st["cli"])
+        self.assertEqual((st["kind"], st["rules"], st["rule_installed"]), ("json", "", False))
+
+    def test_jsonc_is_refused_untouched(self):
+        text = '{\n  // my comment\n  "mcpServers": {}\n}\n'
+        self.write(".cursor/mcp.json", text)
+        self.assertEqual(self.add("cursor"), 1)
+        self.assertEqual(self.read(".cursor/mcp.json"), text)
+
+    def test_agent_with_its_own_mcp_add_command(self):
+        self.add("mine", cli="mytool", add=["mcp", "add", "halo", "{cmd}"],
+                 remove=["mcp", "rm", "halo"], rules="~/.mytool/RULES.md")
+        argv = [c["args"] for c in calls(self.log) if c["cli"] == "mytool"]
+        self.assertEqual(argv[-1][:3], ["mcp", "add", "halo"])
+        self.assertEqual(argv[-1][3:], integration._server_cmd())
+        self.assertIn(integration.BEGIN, self.read(".mytool/RULES.md"))
+        integration.uninstall("mine")
+        self.assertEqual(calls(self.log)[-1]["args"], ["mcp", "rm", "halo"])
+
+    def test_shell_only_agent_gets_commands_not_tools(self):
+        self.add("aiderish", tools="cli", rules="~/.aider/HALO.md")
+        rule = self.read(".aider/HALO.md")
+        self.assertIn("halo digest -f", rule)
+        self.assertIn("halo handoff -s", rule)
+        self.assertNotIn("halo_digest", rule)
+
+    def test_bad_specs(self):
+        for name, spec in (("claude", {"mcp_file": "x"}),           # built in
+                           ("Bad Name", {"mcp_file": "x"}),
+                           ("t", {}),                                # no way to reach it
+                           ("t", {"cli": "x", "add": ["mcp", "add"]}),  # no {cmd}
+                           ("t", {"tools": "cli"}),                  # nowhere to put the rule
+                           ("t", {"mcp_file": "x", "evil": 1})):
+            with self.assertRaises(ValueError, msg=(name, spec)):
+                integration.from_spec(name, spec)
+        with self.assertRaises(ValueError):
+            integration.build_spec("nopreset")
+        cfg = config.load()
+        cfg.custom_agents = {"broken": {"tools": "nope"}}
+        self.assertNotIn("broken", integration.all_agents(cfg))  # skipped, not a crash
+
+    def test_cli_add_list_remove(self):
+        from halo import cli
+
+        def run(argv):
+            with self.assertRaises(SystemExit) as e, \
+                    mock.patch("sys.stdout", io.StringIO()), mock.patch("sys.stderr", io.StringIO()):
+                cli.main(argv)
+            return e.exception.code
+        self.assertEqual(run(["agents", "add", "windsurf"]), 0)
+        self.assertIn("halo", json.loads(self.read(".codeium/windsurf/mcp_config.json"))["mcpServers"])
+        self.assertEqual(run(["agents", "add", "x1", "--cli-tools", "--rules",
+                              os.path.join(self.home, "x1.md")]), 0)
+        self.assertEqual(config.load().agents, ["windsurf", "x1"])
+        self.assertEqual(run(["agents"]), 0)
+        self.assertEqual(run(["agents", "add", "codex", "--mcp-file", "y"]), 2)
+        self.assertEqual(run(["agents", "add", "nothing"]), 2)
+        self.assertEqual(run(["agents", "remove", "windsurf"]), 0)
+        self.assertNotIn("halo", json.loads(self.read(".codeium/windsurf/mcp_config.json"))["mcpServers"])
+        self.assertEqual(sorted(config.load().custom_agents), ["x1"])
+
+    def test_gui_preset_and_forget(self):
+        from halo import gui
+        import threading, urllib.request
+        srv = gui.ThreadingHTTPServer(("127.0.0.1", 0), gui.Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+        def post(body):
+            req = urllib.request.Request(f"http://127.0.0.1:{srv.server_port}/api/agent",
+                                         data=json.dumps(body).encode(), method="POST",
+                                         headers={"X-Halo-Token": gui.TOKEN})
+            return json.load(urllib.request.urlopen(req))
+        try:
+            st = post({"name": "qwen", "action": "preset"})
+            q = next(a for a in st["agents"] if a["name"] == "qwen")
+            self.assertTrue(q["enabled"] and q["custom"])
+            self.assertNotIn("qwen", [p["name"] for p in st["agent_presets"]])
+            self.assertIn("halo", json.loads(self.read(".qwen/settings.json"))["mcpServers"])
+            st = post({"name": "qwen", "action": "forget"})
+            self.assertNotIn("qwen", [a["name"] for a in st["agents"]])
+            self.assertIn("qwen", [p["name"] for p in st["agent_presets"]])
+        finally:
+            srv.shutdown()
+            srv.server_close()
 
 
 if __name__ == "__main__":

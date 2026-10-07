@@ -51,8 +51,12 @@ class Config:
     handoff_agent: str = "codex"
     handoff_rounds: int = 2
     handoff_timeout: int = 900
-    # Agents that use HALO (MCP + rule file), set by `halo setup --agent`: claude/codex/gemini.
+    # Agents that use HALO (MCP + rule file), set by `halo setup --agent` / `halo agents add`:
+    # claude/codex/gemini or a name from custom_agents.
     agents: list = field(default_factory=list)
+    # Agents in charge the user added ({name: spec}, see integration.from_spec): any tool that
+    # takes an MCP server through a CLI command or a JSON config, or runs shell commands.
+    custom_agents: dict = field(default_factory=dict)
 
 
 _ENV = {
