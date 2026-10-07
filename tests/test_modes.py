@@ -181,7 +181,7 @@ class TestGuiScript(unittest.TestCase):
         if not node or subprocess.run([node, "-e", "null ?? 1"], capture_output=True).returncode:
             self.skipTest("no node, or one too old for the syntax every browser has (??)")
         script = re.search(r"<script>(.*?)</script>", gui.PAGE, re.S).group(1)
-        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as fh:
             fh.write(script)
         try:
             p = subprocess.run([node, "--check", fh.name], capture_output=True, text=True)
