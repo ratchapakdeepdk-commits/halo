@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # One-command install: halo CLI + MCP server, model pull, optional Claude Code wiring.
+#   ./install.sh --mode hff   other vendors only: no Ollama, no model download
 #   curl -fsSL <raw url>/install.sh | bash            (or ./install.sh from a clone)
 #   (Claude Code is connected automatically when the `claude` CLI is installed)
 set -euo pipefail
@@ -9,10 +10,15 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
 if [[ -f "$here/pyproject.toml" ]]; then src="$here"; else src="git+$REPO_URL"; fi
 
 command -v python3 >/dev/null || { echo "python3 (>=3.10) is required"; exit 1; }
+# Without Ollama HALO can still hand work to other vendors (HFF mode); the local model needs it.
+case " $* " in *" --mode "*|*" --mode="*) mode_given=1 ;; *) mode_given=0 ;; esac
 if ! command -v ollama >/dev/null && ! curl -fs http://127.0.0.1:11434/api/tags >/dev/null; then
-  echo "Ollama not found. Install it first: https://ollama.com/download"
-  echo "(Linux: curl -fsSL https://ollama.com/install.sh | sh)"
-  exit 1
+  if [[ $mode_given == 0 ]]; then
+    echo "Ollama not found: installing in HFF mode (hand work to other vendors' agents only)."
+    echo "For the free local model too, install Ollama (https://ollama.com/download;"
+    echo "Linux: curl -fsSL https://ollama.com/install.sh | sh), then: halo setup --mode both"
+    set -- --mode hff "$@"
+  fi
 fi
 
 if command -v pipx >/dev/null; then
@@ -30,7 +36,13 @@ export PATH="$HOME/.local/bin:$PATH"
 AGENTS=""
 for a in claude codex gemini; do command -v "$a" >/dev/null && AGENTS="$AGENTS --agent $a"; done
 halo setup "$@" </dev/tty 2>/dev/null || halo setup --yes $AGENTS "$@"
-halo doctor || true
 echo
-echo "Done. Open the control panel with:  halo gui"
-echo "Optional: 'halo tune' tests which local models work best on this machine."
+if halo mode | grep -q "^mode: hff"; then
+  echo "Done. Open the control panel with:  halo gui"
+  echo "Next: 'halo workers test codex' (or gemini / claude) checks the agent HALO hands work to."
+else
+  halo doctor || true
+  echo
+  echo "Done. Open the control panel with:  halo gui"
+  echo "Optional: 'halo tune' tests which local models work best on this machine."
+fi

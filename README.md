@@ -61,10 +61,19 @@ halo gui                   # control panel
 
 `halo gui` (or the desktop shortcut) opens a local page at http://127.0.0.1:8765:
 
-- **Hybrid / Frontier only**: one switch. *Hybrid* lets Claude Code delegate routine work
-  to the local model. *Frontier only* turns the local model off: no local tools, no rule, no
-  skill; only `halo_council` (frontier vendors cross-checking each other) stays. The change takes effect in new Claude Code sessions. Same from the terminal:
-  `halo mode hybrid` / `halo mode frontier`.
+- **Mode: Both / Hybrid / HFF**, one switch for every connected agent:
+
+  | mode | what the agent in charge gets | needs |
+  |---|---|---|
+  | `both` (default) | local tools (`halo_digest`, `halo_code`, `halo_ask`) + `halo_handoff` + full council | Ollama + a model, and a vendor CLI for handoff |
+  | `hybrid` | local tools only; the council asks local models only, so no work leaves the machine | Ollama + a model |
+  | `hff` | `halo_handoff` + a vendor-only council; no local model, no skill | a vendor CLI (Codex, Gemini, Claude, ...) |
+
+  Each mode writes its own rule block, so an agent is never told about tools it does not have.
+  The change takes effect in new agent sessions. Same from the terminal: `halo mode both` /
+  `halo mode hybrid` / `halo mode hff`. Pick at install time with `halo setup --mode hff`: it
+  skips Ollama and the model download entirely. Configs from before this switch keep what they
+  had (`hybrid` there meant both; `frontier` is now `hff`).
 - Status of Ollama, your hardware and the Claude Code connection.
 - Model selection for digest, code and fallback, plus estimated savings.
 - **Auto-pick best for this machine** (`halo tune`), described below.
@@ -81,7 +90,8 @@ fastest) and a fallback. To give it more to choose from, pull more candidates fi
 
 ### Choosing at install time
 
-`halo setup` (run by both installers) lists the models that fit **this** machine. You tick
+`halo setup` (run by both installers) first asks for the mode (`--mode`, see above; `hff`
+needs no local model and skips this step). It then lists the models that fit **this** machine. You tick
 the ones you want, or press Enter for the ★ recommended set. HALO downloads them (and resumes
 stalled downloads), assigns the digest / code / fallback roles and can measure them straight
 away. List or add more later with `halo models` / `halo models --pull NAME`, or use the
@@ -233,8 +243,8 @@ files) to every model in `council_models` (default `["codex", "gemini"]`) in par
 returns all answers, failures included. HALO does not vote or merge; the agent in charge
 compares, and agreement between vendors is evidence, not proof. It is meant for decisions
 worth a second opinion (a derivation, a review, a bug you are unsure about). Each call spends
-every member's plan quota, and the material goes to each of those vendors. It also works in
-*Frontier only* mode, where local models are dropped from the council.
+every member's plan quota, and the material goes to each of those vendors. In `hff` mode local
+models are dropped from the council; in `hybrid` mode the vendors are.
 
 **Sharing the work between vendors: `halo handoff` (HFF, hybrid frontier-frontier).** Council
 asks for opinions; handoff hands over *work*. The agent in charge passes a task, a `sector`
@@ -250,7 +260,7 @@ the other agent's short summary and the check result, so the agent in charge spe
 hundred tokens instead of doing the work on its own quota. On a toy two-module task with
 tests, `codex` passed in one round (59 s, 73k Codex input tokens) and `claude:haiku` in one
 round (33 s). The project (minus secrets) is sent to that vendor; default agent is
-`handoff_agent` (`codex`). Like council, it stays available in *Frontier only* mode.
+`handoff_agent` (`codex`). It is offered in `both` and `hff` mode, not in `hybrid`.
 
 **Adding your own worker: `halo workers`.** Any other coding CLI that runs headless can join:
 as a worker (fallback tier, council), as a handoff agent, or both. A worker is a few lines of

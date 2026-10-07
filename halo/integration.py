@@ -34,14 +34,12 @@ from dataclasses import dataclass
 from . import config
 
 SKILL_SRC = os.path.join(os.path.dirname(__file__), "skill", "SKILL.md")
-MODES = ("hybrid", "frontier")
+MODES = config.MODES
 
 BEGIN, END = "<!-- halo:begin (managed by `halo mode`) -->", "<!-- halo:end -->"
-RULE = f"""{BEGIN}
-# Hybrid by default (HALO)
-
-This machine has a free local model behind the `halo` MCP tools. Work hybrid in every session:
-
+# The rule is built from the parts the current mode offers; `cli` = the agent has no MCP and
+# is taught the same thing as `halo` shell commands.
+_LOCAL = """\
 - Before reading or grepping through a large log, file, or command output (over ~200 lines),
   call `halo_digest` with the path. Its `checks.verified` claims are already confirmed in
   the file; grep only a key claim listed in `checks.not_found`.
@@ -52,30 +50,46 @@ This machine has a free local model behind the `halo` MCP tools. Work hybrid in 
   either way; logic-dense files (expression parsers, cron, Markdown: many interacting rules)
   fail locally and cost ~20% more, so write those yourself.
 - Keep design, multi-file changes, subtle debugging and security-sensitive code yourself.
-- When the user asks to hand work to another agent or vendor (Codex/GPT, Gemini, Claude), use
-  `halo_handoff` with a narrow `sector` and a check, then review the diff it returns (it finds
-  real bugs). Pays off from ~150 lines of new code; smaller jobs cost about the same either way.
-  Not on your own initiative: it sends the project (minus secrets) to that vendor.
-- If HALO says a path is outside the allowed directories, just do that step yourself.
-{END}
 """
-# For agents without MCP: the same advice, as shell commands.
-RULE_CLI = f"""{BEGIN}
-# Hybrid by default (HALO)
-
-This machine has a free local model behind the `halo` command. Work hybrid in every session:
-
+_LOCAL_CLI = """\
 - Before reading or grepping through a large log, file, or command output (over ~200 lines),
   run `halo digest -f <path> "<question>"` and use its answer instead of reading the file.
   Add `--json` to see `checks`: claims under `verified` are confirmed in the file; grep only
   a key claim listed in `not_found`.
 - Keep design, multi-file changes, subtle debugging and security-sensitive code yourself.
+"""
+_HFF = """\
+- When the user asks to hand work to another agent or vendor (Codex/GPT, Gemini, Claude), use
+  `halo_handoff` with a narrow `sector` and a check, then review the diff it returns (it finds
+  real bugs). Pays off from ~150 lines of new code; smaller jobs cost about the same either way.
+  Not on your own initiative: it sends the project (minus secrets) to that vendor.
+"""
+_HFF_CLI = """\
 - When the user asks to hand work to another agent or vendor (Codex/GPT, Gemini, Claude), run
   `halo handoff -s <sector> -c "<check>" -a <agent> "<task>"` and review the diff it prints
   (add `--diff` if it is left out). Pays off from ~150 lines of new code.
   Not on your own initiative: it sends the project (minus secrets) to that vendor.
-{END}
 """
+_ROOTS = "- If HALO says a path is outside the allowed directories, just do that step yourself.\n"
+
+
+def rule_text(mode: str, cli: bool = False) -> str:
+    """HALO's managed block for an agent's global rules file in this mode ("" = none)."""
+    local, hff = mode in ("both", "hybrid"), mode in ("both", "hff")
+    where = "the `halo` command" if cli else "the `halo` MCP tools"
+    if local:
+        head = (f"# Hybrid by default (HALO)\n\nThis machine has a free local model behind "
+                f"{where}. Work hybrid in every session:\n\n")
+    elif hff:
+        head = (f"# Handing work to other vendors (HALO)\n\n{where[0].upper()}{where[1:]} "
+                f"can hand a sub-task to another vendor's agent:\n\n")
+    else:
+        return ""
+    body = ((_LOCAL_CLI if cli else _LOCAL) if local else "") + \
+           ((_HFF_CLI if cli else _HFF) if hff else "") + ("" if cli else _ROOTS)
+    return f"{BEGIN}\n{head}{body}{END}\n"
+
+
 BLOCK_RE = re.compile(re.escape(BEGIN) + r".*?" + re.escape(END) + r"\n?", re.DOTALL)
 
 
@@ -247,7 +261,7 @@ def active_agents(cfg: config.Config | None = None) -> list[str]:
     return names or ["claude"]  # installs from before multi-agent support were Claude-only
 
 
-def write_rule(enabled: bool, agent: str = "claude", cfg: config.Config | None = None) -> None:
+def write_rule(mode: str, agent: str = "claude", cfg: config.Config | None = None) -> None:
     """Add or remove HALO's block in an agent's global rules file, keeping the user's text."""
     a = AGENTS[agent] if agent in AGENTS else get(agent, cfg)
     path = a.rules_path()
@@ -262,9 +276,9 @@ def write_rule(enabled: bool, agent: str = "claude", cfg: config.Config | None =
     text = BLOCK_RE.sub("", text)
     if had_block and text.strip():
         text = text.rstrip() + "\n"  # drop the blank separator line HALO added
-    if enabled:
-        text = (text.rstrip() + "\n\n" if text.strip() else "") + (
-            RULE_CLI if a.tools == "cli" else RULE)
+    rule = rule_text(mode, cli=a.tools == "cli")
+    if rule:
+        text = (text.rstrip() + "\n\n" if text.strip() else "") + rule
     if text.strip():
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as fh:
@@ -283,15 +297,16 @@ def write_skill(enabled: bool) -> None:
 
 
 def set_mode(mode: str) -> config.Config:
+    mode = config.MODE_ALIASES.get(mode, mode)
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
     cfg = config.load()
     cfg.mode = mode
     config.save(cfg)
     for name in active_agents(cfg):
-        write_rule(mode == "hybrid", name, cfg)
+        write_rule(mode, name, cfg)
         if get(name, cfg).skill:
-            write_skill(mode == "hybrid")
+            write_skill(config.local_on(cfg))  # the skill is about local delegation only
     return cfg
 
 
@@ -434,7 +449,7 @@ def _codex_auto_approve() -> None:
         fh.write("\n".join(lines) + "\n")
 
 
-def install(agents: list[str], mode: str = "hybrid") -> int:
+def install(agents: list[str], mode: str = "both") -> int:
     """Connect HALO to the chosen agents and remember them for `halo mode`."""
     cfg = config.load()
     known = all_agents(cfg)
@@ -465,7 +480,7 @@ def uninstall(agent: str, forget: bool = False) -> None:
     agent's spec from the config."""
     cfg = config.load()
     a = get(agent, cfg)
-    write_rule(False, agent, cfg)
+    write_rule("off", agent, cfg)
     if a.skill:
         write_skill(False)
     if a.mcp_file and a.tools != "cli":
@@ -481,5 +496,5 @@ def uninstall(agent: str, forget: bool = False) -> None:
     config.save(cfg)
 
 
-def install_claude(mode: str = "hybrid") -> int:
+def install_claude(mode: str = "both") -> int:
     return install(["claude"], mode)

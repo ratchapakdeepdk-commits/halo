@@ -1,6 +1,6 @@
 """`halo gui`: a small local control panel (stdlib only, opens in the browser).
 
-Switch hybrid / frontier-only, see Ollama + hardware status, pick models, see savings and
+Switch both / hybrid / hff, see Ollama + hardware status, pick models, see savings and
 run `tune` / speed checks. Binds to 127.0.0.1 by default; every state-changing request needs
 a per-process token embedded in the page, so other websites cannot flip settings.
 """
@@ -361,8 +361,8 @@ h1{font-size:22px;margin:0;letter-spacing:.2px}header span{color:var(--muted);fo
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
 .card h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 10px;font-weight:600}
 .wide{grid-column:1/-1}
-.seg{display:flex;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:4px;gap:4px}
-.seg button{flex:1;border:0;background:transparent;color:var(--text);padding:12px 10px;border-radius:7px;
+.seg{display:flex;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:4px;gap:4px;flex-wrap:wrap}
+.seg button{flex:1 1 150px;border:0;background:transparent;color:var(--text);padding:12px 10px;border-radius:7px;
 font:inherit;font-weight:600;cursor:pointer}
 .seg button small{display:block;font-weight:400;color:var(--muted);font-size:12.5px;margin-top:2px}
 .seg button.on{background:var(--accent);color:#fff}.seg button.on small{color:#e6eefc}
@@ -396,16 +396,17 @@ max-height:260px;overflow:auto;white-space:pre-wrap;margin:10px 0 0}
 <div class="grid">
  <section class="card wide"><h2>Mode</h2>
   <div class="seg">
-   <button id="m-hybrid" onclick="setMode('hybrid')">Hybrid<small>Routine work goes to the local model</small></button>
-   <button id="m-frontier" onclick="setMode('frontier')">Frontier only<small>HALO off; the frontier model does everything</small></button>
+   <button id="m-both" onclick="setMode('both')">Both<small>Local model for routine work + handoff to other vendors</small></button>
+   <button id="m-hybrid" onclick="setMode('hybrid')">Hybrid<small>Local model only; no work leaves this machine</small></button>
+   <button id="m-hff" onclick="setMode('hff')">HFF<small>Other vendors only; no local model needed</small></button>
   </div>
   <p class="note" id="modenote">Takes full effect in new agent sessions.</p>
  </section>
  <section class="card"><h2>Local model server</h2><div id="sys"></div></section>
  <section class="card"><h2>Agents</h2><div id="agents"></div>
-  <p class="note">Add = the agent gets HALO's tools (local delegation in Hybrid; council and handoff in both modes). Takes effect in new sessions. Any other agent: <code>halo agents add NAME --mcp-file ...</code> (see <code>halo agents</code>).</p></section>
+  <p class="note">Add = the agent gets HALO's tools (local delegation in Hybrid, handoff in HFF, all of it in Both). Takes effect in new sessions. Any other agent: <code>halo agents add NAME --mcp-file ...</code> (see <code>halo agents</code>).</p></section>
  <section class="card wide"><h2>Council (frontier + frontier)</h2>
-  <p class="note" style="margin:0 0 8px">Who answers when an agent asks the council (halo_council / <code>halo council</code>) for a second opinion. In Frontier only mode local models are skipped.</p>
+  <p class="note" style="margin:0 0 8px">Who answers when an agent asks the council (halo_council / <code>halo council</code>) for a second opinion. HFF mode skips local models; Hybrid mode skips vendors.</p>
   <div id="council"></div>
   <div class="btns"><button class="btn primary" onclick="saveCouncil()">Save council</button></div>
  </section>
@@ -477,7 +478,7 @@ const dot=ok=>`<span class="dot ${ok?"ok":"no"}"></span>`;
 async function post(path,body){const r=await fetch(path,{method:"POST",headers:{"X-Halo-Token":T,"Content-Type":"application/json"},body:JSON.stringify(body||{})});return r.json()}
 function opts(sel,list,val,blank){sel.innerHTML=(blank?`<option value="">${blank}</option>`:"")+list.map(m=>`<option ${m===val?"selected":""}>${esc(m)}</option>`).join("")}
 function render(s){S=s;$("ver").textContent="v"+s.version;
- $("m-hybrid").classList.toggle("on",s.mode==="hybrid");$("m-frontier").classList.toggle("on",s.mode==="frontier");
+ for(const m of ["both","hybrid","hff"])$("m-"+m).classList.toggle("on",s.mode===m);
  const h=s.hardware;
  $("sys").innerHTML=row("Ollama",dot(s.ollama.ok)+(s.ollama.ok?"running":"not reachable"))+row("URL",esc(s.ollama.url))
   +row("Hardware",esc(h.detail))+row("Model budget",h.gib.toFixed(0)+" GiB");
@@ -501,8 +502,8 @@ function render(s){S=s;$("ver").textContent="v"+s.version;
    ${esc(m)} <span class="sub">${cloud?esc(vend[m].brand)+(dis?" (not installed)":""):"local"}</span></label>`};
   const cloud=s.council.choices.filter(m=>vend[m]),local=s.council.choices.filter(m=>!cloud.includes(m));
   const nl=local.filter(m=>s.council.members.includes(m)).length;
-  $("council").innerHTML=cloud.map(box).join("")+(s.mode==="frontier"||!local.length?"":
-   `<details ${nl?"open":""}><summary class="sub" style="cursor:pointer;padding:6px 0">Local models (${nl} chosen, Hybrid only)</summary>${local.map(box).join("")}</details>`)}
+  $("council").innerHTML=(s.mode==="hybrid"?"":cloud.map(box).join(""))+(s.mode==="hff"||!local.length?"":
+   `<details ${nl||s.mode==="hybrid"?"open":""}><summary class="sub" style="cursor:pointer;padding:6px 0">Local models (${nl} chosen; not used in HFF mode)</summary>${local.map(box).join("")}</details>`)}
  const hf=s.handoff;
  if(!document.activeElement||!["h-agent","h-rounds"].includes(document.activeElement.id)){
   $("h-agent").innerHTML=hf.choices.map(m=>{const ok=!!vend[m.split(":")[0]]?.installed;

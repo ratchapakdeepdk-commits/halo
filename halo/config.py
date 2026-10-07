@@ -8,10 +8,16 @@ CONFIG_PATH = os.path.expanduser(
 DATA_DIR = os.path.expanduser(os.environ.get("HALO_HOME", "~/.local/share/halo"))
 
 
+MODES = ("both", "hybrid", "hff")
+MODE_ALIASES = {"frontier": "hff", "all": "both", "local": "hybrid"}
+
+
 @dataclass
 class Config:
-    # "hybrid" = delegate routine work to the local model; "frontier" = HALO switched off.
-    mode: str = "hybrid"
+    # What HALO offers the agent in charge: "hybrid" = routine work to the local model,
+    # "hff" = work handed to other frontier vendors (no local model needed), "both".
+    mode: str = "both"
+    mode_version: int = 2  # 1 (absent): "hybrid" meant both, "frontier" meant hff
     ollama_url: str = "http://127.0.0.1:11434"
     model: str = "qwen3:30b-a3b-instruct-2507-q4_K_M"
     # Model for halo_code ("" = same as `model`) and further local models to try, in order,
@@ -74,11 +80,18 @@ def load() -> Config:
     cfg = Config()
     try:
         with open(CONFIG_PATH, encoding="utf-8") as fh:
-            for k, v in json.load(fh).items():
-                if hasattr(cfg, k):
-                    setattr(cfg, k, v)
-    except (OSError, ValueError):
+            data = json.load(fh)
+        for k, v in data.items():
+            if hasattr(cfg, k):
+                setattr(cfg, k, v)
+        if "mode_version" not in data:  # saved before HFF and hybrid could be picked apart
+            cfg.mode = {"hybrid": "both"}.get(cfg.mode, cfg.mode)
+            cfg.mode_version = 2
+    except (OSError, ValueError, AttributeError):
         pass
+    cfg.mode = MODE_ALIASES.get(cfg.mode, cfg.mode)
+    if cfg.mode not in MODES:
+        cfg.mode = "both"
     # OLLAMA_HOST is Ollama's own convention; honour it when HALO_OLLAMA_URL is unset.
     host = os.environ.get("OLLAMA_HOST")
     if host and "HALO_OLLAMA_URL" not in os.environ:
@@ -91,6 +104,16 @@ def load() -> Config:
         cfg.fallback_models = [m for m in os.environ["HALO_FALLBACK_MODELS"].split(",") if m]
     cfg.ollama_url = cfg.ollama_url.rstrip("/")
     return cfg
+
+
+def local_on(cfg: Config) -> bool:
+    """The local-model tools (digest, code, ask) are offered."""
+    return cfg.mode in ("both", "hybrid")
+
+
+def hff_on(cfg: Config) -> bool:
+    """Work can be handed to other frontier vendors (handoff, vendor council members)."""
+    return cfg.mode in ("both", "hff")
 
 
 def save(cfg: Config) -> str:

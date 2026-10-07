@@ -252,7 +252,32 @@ def cmd_models(a, cfg):
     return 0 if ok else 1
 
 
+MODE_HELP = {"both": "local model for routine work + handoff to other vendors",
+             "hybrid": "local model only (needs Ollama and a model download)",
+             "hff": "hand work to other vendors only; no local model, nothing to download"}
+
+
+def choose_mode() -> str:
+    print("What should HALO do?")
+    for i, m in enumerate(config.MODES, 1):
+        print(f"  {i}. {m:<7} {MODE_HELP[m]}")
+    ans = input("Pick 1-3 (Enter = 1): ").strip()
+    return config.MODES[int(ans) - 1] if ans in ("1", "2", "3") else "both"
+
+
 def cmd_setup(a, cfg):
+    interactive = not a.yes and sys.stdin is not None and sys.stdin.isatty()
+    cfg.mode = config.MODE_ALIASES.get(a.mode, a.mode) if a.mode else (
+        choose_mode() if interactive else cfg.mode)
+    print(f"✓ mode: {cfg.mode} ({MODE_HELP[cfg.mode]})")
+    if config.local_on(cfg):
+        rc = _setup_local(a, cfg)
+        if rc:
+            return rc
+    return _setup_finish(a, cfg)
+
+
+def _setup_local(a, cfg):
     if a.url:
         cfg.ollama_url = a.url.rstrip("/")
     url = _detect_url(cfg)
@@ -289,6 +314,10 @@ def cmd_setup(a, cfg):
             from . import tune
             config.save(cfg)
             tune.run(cfg, models=chosen)
+    return 0
+
+
+def _setup_finish(a, cfg):
     bad = [w for w in (a.worker or []) if not llm.is_cloud(w, cfg)]
     if bad:
         print(f"--worker must be one of {', '.join(vendors.names(cfg))} (optionally :model): {bad}")
@@ -307,7 +336,12 @@ def cmd_setup(a, cfg):
         except ValueError as e:
             print(f"✗ {e}", file=sys.stderr)
             return 2
-    print("\nNext: `halo doctor` to benchmark, `halo stats` to see savings.")
+    elif cfg.agents:
+        integration.set_mode(cfg.mode)  # agents connected earlier get this mode's rule
+    nxt = ["`halo doctor` to benchmark"] if config.local_on(cfg) else []
+    if config.hff_on(cfg):
+        nxt.append(f"`halo workers test {cfg.handoff_agent}` to check the handoff agent")
+    print("\nNext: " + ", ".join(nxt) + ", `halo stats` to see savings.")
     return 0
 
 
@@ -504,10 +538,9 @@ def cmd_workers(a, cfg):
 def cmd_mode(a, cfg):
     if a.mode:
         integration.set_mode(a.mode)
-        print(f"mode: {a.mode} — takes full effect in new agent sessions")
     st = integration.status()
-    if not a.mode:
-        print(f"mode: {st['mode']}")
+    print(f"mode: {st['mode']} ({MODE_HELP[st['mode']]})"
+          + (" — takes full effect in new agent sessions" if a.mode else ""))
     for n, s in st["agents"].items():
         if s["enabled"]:
             print(f"  {s['title']}: rule in {integration.AGENTS[n].rules_path()}: "
@@ -598,6 +631,9 @@ def main(argv=None):
     s = sub.add_parser("setup", help="detect hardware, pull a model, write config")
     s.add_argument("--model", help="digest/ask model (default: pick from VRAM)")
     s.add_argument("--code-model", help="model for `halo code` (default: same as --model)")
+    s.add_argument("--mode", choices=[*config.MODES, *config.MODE_ALIASES],
+                   help="both (default) | hybrid: local model only | hff: other vendors only, "
+                        "skips Ollama and the model download")
     s.add_argument("--url", help="Ollama URL (default: auto-detect)")
     s.add_argument("--claude", action="store_true", help="same as --agent claude")
     s.add_argument("--agent", action="append",
@@ -661,8 +697,9 @@ def main(argv=None):
     s.set_defaults(fn=lambda a, cfg: __import__("halo.gui").gui.serve(
         a.host, a.port, not a.no_browser) or 0)
 
-    s = sub.add_parser("mode", help="show or switch: hybrid | frontier (HALO off)")
-    s.add_argument("mode", nargs="?", choices=integration.MODES)
+    s = sub.add_parser("mode", help="show or switch: both | hybrid (local model only) | "
+                                    "hff (other vendors only)")
+    s.add_argument("mode", nargs="?", choices=[*config.MODES, *config.MODE_ALIASES])
     s.set_defaults(fn=cmd_mode)
 
     s = sub.add_parser("mcp", help="run the MCP server on stdio")

@@ -157,7 +157,24 @@ TOOLS = [
 ]
 
 
-FRONTIER_TOOLS = ("halo_council", "halo_handoff", "halo_stats")
+LOCAL_TOOLS = ("halo_digest", "halo_code", "halo_ask")  # need the local model
+HFF_TOOLS = ("halo_handoff",)                            # need another vendor
+
+
+def offered(cfg) -> list[str]:
+    """Tool names this mode offers; council and stats work in every mode."""
+    return [t["name"] for t in TOOLS
+            if (t["name"] not in LOCAL_TOOLS or config.local_on(cfg))
+            and (t["name"] not in HFF_TOOLS or config.hff_on(cfg))]
+
+TOOLS_BY_NAME = {t["name"]: t for t in TOOLS}
+_LOCAL_HINT = ("HALO gives you a free local model as a worker. Keep planning, tool use and final "
+               "decisions yourself; delegate token-heavy routine work: halo_digest for large "
+               "inputs, halo_code for well-specified single-file code with a real check.")
+_HFF_HINT = ("halo_handoff hands a multi-file sub-task to another vendor's agent when the user "
+             "asks for it; halo_council gets second opinions from other vendors.")
+INSTRUCTIONS = {"both": _LOCAL_HINT + " " + _HFF_HINT, "hybrid": _LOCAL_HINT,
+                "hff": "HALO connects you to other frontier vendors. " + _HFF_HINT}
 
 
 def _roots(cfg) -> list[str]:
@@ -184,9 +201,9 @@ def call_tool(name: str, args: dict) -> dict:
     cfg = config.load()
     if os.environ.get("HALO_WORKER") and name != "halo_stats":
         return {"status": "off", "error": "HALO tools are disabled inside a HALO worker."}
-    if cfg.mode != "hybrid" and name not in FRONTIER_TOOLS:
-        return {"status": "off", "error": "HALO is switched to frontier-only mode by the user. "
-                                          "Do this step yourself."}
+    if name in TOOLS_BY_NAME and name not in offered(cfg):
+        return {"status": "off", "error": f"HALO is in {cfg.mode} mode, chosen by the user "
+                                          f"(`halo mode`); {name} is off. Do this step yourself."}
     roots = _roots(cfg)
     if name == "halo_digest":
         bad = _outside(args.get("paths") or [], roots)
@@ -212,11 +229,12 @@ def call_tool(name: str, args: dict) -> dict:
         if bad:
             return {"status": "error", "error": f"outside the allowed directories: {bad}"}
         models = args.get("models") or None
-        if cfg.mode != "hybrid":  # frontier-only: vendors yes, local models no
-            models = [m for m in (models or tasks.council_models(cfg)) if llm.is_cloud(m, cfg)]
+        if cfg.mode != "both":  # hybrid: local members only; hff: vendors only
+            models = [m for m in (models or tasks.council_models(cfg))
+                      if llm.is_cloud(m, cfg) == config.hff_on(cfg)]
             if not models:
-                return {"status": "off", "error": "frontier-only mode: no vendor models "
-                                                  "in the council"}
+                return {"status": "off", "error": f"{cfg.mode} mode: no "
+                        f"{'vendor' if config.hff_on(cfg) else 'local'} models in the council"}
         return tasks.council(cfg, args["question"], args.get("paths") or [], models=models)
     if name == "halo_handoff":
         workdir = args.get("workdir") or os.getcwd()
@@ -246,21 +264,16 @@ def handle(msg: dict) -> dict | None:
         return ok({"protocolVersion": want if want in SUPPORTED_PROTOCOLS else SUPPORTED_PROTOCOLS[0],
                    "capabilities": {"tools": {}},
                    "serverInfo": {"name": "halo", "version": __version__},
-                   "instructions": (
-                       "HALO gives you a free local model as a worker. Keep planning, tool use "
-                       "and final decisions yourself; delegate token-heavy routine work: "
-                       "halo_digest for large inputs, halo_code for well-specified single-file "
-                       "code with a real check.")})
+                   "instructions": INSTRUCTIONS[config.load().mode]})
     if method == "ping":
         return ok({})
     if method == "tools/list":
         # Inside a HALO worker (a vendor CLI HALO itself started) offer nothing: no loops.
-        # Frontier-only mode offers only the frontier-to-frontier tools (council, handoff).
+        # The mode decides which parts are offered (`halo mode hybrid | hff | both`).
         if os.environ.get("HALO_WORKER"):
             return ok({"tools": []})
-        if config.load().mode != "hybrid":
-            return ok({"tools": [t for t in TOOLS if t["name"] in FRONTIER_TOOLS]})
-        return ok({"tools": TOOLS})
+        names = offered(config.load())
+        return ok({"tools": [t for t in TOOLS if t["name"] in names]})
     if method == "tools/call":
         p = msg.get("params") or {}
         try:

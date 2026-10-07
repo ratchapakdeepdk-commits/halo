@@ -240,11 +240,13 @@ class TestAgentChoice(Env):
 
     def test_mode_switch_applies_to_every_chosen_agent(self):
         integration.install(["claude", "codex"])
-        integration.set_mode("frontier")
-        self.assertNotIn(integration.BEGIN, self.rules("claude"))
-        self.assertNotIn(integration.BEGIN, self.rules("codex"))
+        integration.set_mode("hff")
+        for a in ("claude", "codex"):
+            self.assertIn("halo_handoff", self.rules(a))
+            self.assertNotIn("halo_digest", self.rules(a))
         integration.set_mode("hybrid")
-        self.assertIn(integration.BEGIN, self.rules("codex"))
+        self.assertIn("halo_digest", self.rules("codex"))
+        self.assertNotIn("halo_handoff", self.rules("codex"))
         st = integration.status()["agents"]
         self.assertTrue(st["codex"]["enabled"] and st["codex"]["rule_installed"])
         self.assertFalse(st["gemini"]["enabled"])
@@ -321,9 +323,9 @@ class TestCustomAgents(Env):
         self.assertIn(integration.BEGIN, self.read(".config/opencode/AGENTS.md"))
         self.assertIn("halo_digest", self.read(".config/opencode/AGENTS.md"))
 
-        integration.set_mode("frontier")  # mode switches custom agents too (empty file: removed)
-        self.assertFalse(os.path.exists(self.path(".config/opencode/AGENTS.md")))
-        integration.set_mode("hybrid")
+        integration.set_mode("hff")  # mode switches custom agents too
+        self.assertNotIn("halo_digest", self.read(".config/opencode/AGENTS.md"))
+        self.assertIn("halo_handoff", self.read(".config/opencode/AGENTS.md"))
         integration.uninstall("opencode", forget=True)
         data = json.loads(self.read(".config/opencode/opencode.json"))
         self.assertNotIn("halo", data["mcp"])

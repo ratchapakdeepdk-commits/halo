@@ -45,44 +45,96 @@ class TestModes(Env):
         os.makedirs(os.path.join(self.d, "claude"))
         with open(os.path.join(self.d, "claude", "CLAUDE.md"), "w") as fh:
             fh.write("# My own rules\nbe nice\n")
-        integration.set_mode("hybrid")
-        integration.set_mode("hybrid")  # idempotent: block not duplicated
+        integration.set_mode("both")
+        integration.set_mode("both")  # idempotent: block not duplicated
         text = self.claude_md()
         self.assertIn("be nice", text)
         self.assertEqual(text.count(integration.BEGIN), 1)
-        integration.set_mode("frontier")
+        self.assertIn("halo_digest", text)
+        self.assertIn("halo_handoff", text)
+        integration.set_mode("hybrid")
+        text = self.claude_md()
+        self.assertIn("halo_digest", text)
+        self.assertNotIn("halo_handoff", text)
+        integration.set_mode("hff")
+        text = self.claude_md()
+        self.assertEqual(text.count(integration.BEGIN), 1)
+        self.assertIn("halo_handoff", text)
+        self.assertNotIn("halo_digest", text)
+        self.assertNotIn("free local model", text)
+        integration.write_rule("off", "claude")
         self.assertEqual(self.claude_md().strip(), "# My own rules\nbe nice")
 
-    def test_frontier_removes_empty_file_and_skill(self):
+    def test_skill_only_with_local_model(self):
+        integration.set_mode("both")
+        self.assertTrue(integration.status()["skill_installed"])
+        integration.set_mode("hff")
+        self.assertFalse(integration.status()["skill_installed"])
+        self.assertEqual(config.load().mode, "hff")
         integration.set_mode("hybrid")
         self.assertTrue(integration.status()["skill_installed"])
-        integration.set_mode("frontier")
-        self.assertFalse(os.path.exists(os.path.join(self.d, "claude", "CLAUDE.md")))
-        self.assertFalse(integration.status()["skill_installed"])
-        self.assertEqual(config.load().mode, "frontier")
 
-    def test_mcp_offers_only_frontier_tools_in_frontier_mode(self):
-        integration.set_mode("frontier")
+    def tools(self):
         r = mcp_server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
-        self.assertEqual([t["name"] for t in r["result"]["tools"]],
-                         ["halo_council", "halo_handoff", "halo_stats"])
-        # ...and a council there never reaches a local model, even when asked to
-        r = mcp_server.handle({"jsonrpc": "2.0", "id": 9, "method": "tools/call",
-                               "params": {"name": "halo_council", "arguments": {
-                                   "question": "x", "models": ["qwen3:8b"]}}})
-        self.assertIn("frontier-only", r["result"]["content"][0]["text"])
-        self.assertEqual(self.fake.requests, [])
-        r = mcp_server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-                               "params": {"name": "halo_ask", "arguments": {"question": "x"}}})
-        self.assertTrue(r["result"]["isError"])
-        self.assertEqual(self.fake.requests, [])
-        integration.set_mode("hybrid")
-        r = mcp_server.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
-        self.assertEqual(len(r["result"]["tools"]), 6)
+        return [t["name"] for t in r["result"]["tools"]]
 
-    def test_bad_mode(self):
+    def call(self, name, args):
+        r = mcp_server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                               "params": {"name": name, "arguments": args}})
+        return r["result"]
+
+    def test_mcp_tools_follow_the_mode(self):
+        integration.set_mode("hff")
+        self.assertEqual(self.tools(), ["halo_council", "halo_handoff", "halo_stats"])
+        # ...and a council there never reaches a local model, even when asked to
+        r = self.call("halo_council", {"question": "x", "models": ["qwen3:8b"]})
+        self.assertIn("no vendor models", r["content"][0]["text"])
+        r = self.call("halo_ask", {"question": "x"})
+        self.assertTrue(r["isError"])
+        self.assertEqual(self.fake.requests, [])
+
+        integration.set_mode("hybrid")
+        self.assertEqual(self.tools(), ["halo_digest", "halo_code", "halo_ask",
+                                        "halo_council", "halo_stats"])
+        r = self.call("halo_handoff", {"task": "t", "sector": ["src"]})
+        self.assertTrue(r["isError"])
+        self.assertIn("hybrid mode", r["content"][0]["text"])
+        # ...and its council never sends the user's files to a vendor
+        r = self.call("halo_council", {"question": "x", "models": ["codex"]})
+        self.assertIn("no local models", r["content"][0]["text"])
+
+        integration.set_mode("both")
+        self.assertEqual(len(self.tools()), 6)
+
+    def test_old_config_names_migrate(self):
+        def load_with(data):
+            with open(config.CONFIG_PATH, "w") as fh:
+                json.dump(data, fh)
+            return config.load().mode
+        # before mode_version, "hybrid" offered everything and "frontier" only the vendors
+        self.assertEqual(load_with({"mode": "hybrid"}), "both")
+        self.assertEqual(load_with({"mode": "frontier"}), "hff")
+        self.assertEqual(load_with({"mode": "hybrid", "mode_version": 2}), "hybrid")
+        self.assertEqual(load_with({"mode": "garbage", "mode_version": 2}), "both")
+
+    def test_bad_mode_and_aliases(self):
         with self.assertRaises(ValueError):
-            integration.set_mode("local")
+            integration.set_mode("nope")
+        self.assertEqual(integration.set_mode("frontier").mode, "hff")
+        self.assertEqual(integration.set_mode("local").mode, "hybrid")
+
+    def test_setup_hff_needs_no_ollama(self):
+        from halo import cli
+        with mock.patch.object(cli, "_detect_url", side_effect=AssertionError("Ollama probed")), \
+                mock.patch.object(cli.llm, "pull", side_effect=AssertionError("model pulled")), \
+                mock.patch.object(integration, "register_mcp", return_value=0), \
+                mock.patch("sys.stdout", new_callable=__import__("io").StringIO) as out:
+            with self.assertRaises(SystemExit) as e:
+                cli.main(["setup", "--mode", "hff", "-y", "--agent", "claude"])
+        self.assertEqual(e.exception.code, 0, out.getvalue())
+        self.assertEqual(config.load().mode, "hff")
+        self.assertIn("halo_handoff", self.claude_md())
+        self.assertIn("halo workers test codex", out.getvalue())
 
 
 class TestTune(Env):
@@ -155,14 +207,14 @@ class TestGui(Env):
             page = urllib.request.urlopen(base + "/").read().decode()
             self.assertIn(gui.TOKEN, page)
             self.assertNotIn("__INIT__", page)
-            req = urllib.request.Request(base + "/api/mode", data=b'{"mode":"frontier"}',
+            req = urllib.request.Request(base + "/api/mode", data=b'{"mode":"hff"}',
                                          method="POST")
             with self.assertRaises(urllib.error.HTTPError) as e:
                 urllib.request.urlopen(req)
             self.assertEqual(e.exception.code, 403)
             req.add_header("X-Halo-Token", gui.TOKEN)
             st = json.load(urllib.request.urlopen(req))
-            self.assertEqual(st["mode"], "frontier")
+            self.assertEqual(st["mode"], "hff")
         finally:
             srv.shutdown()
             srv.server_close()

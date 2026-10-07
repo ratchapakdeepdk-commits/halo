@@ -1,6 +1,7 @@
 # HALO installer for Windows (run via install.bat).
 #   -CiSmoke   CI only: skip Ollama + model download, do not open the panel.
-param([switch]$CiSmoke)
+#   -Mode      both | hybrid | hff (asked when left out; hff needs no Ollama or model)
+param([switch]$CiSmoke, [ValidateSet("", "both", "hybrid", "hff")][string]$Mode = "")
 $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
@@ -38,8 +39,16 @@ if (-not $py) {
 }
 Say "Python: $py"
 
-# 2. Ollama (the local model server)
-if (-not $CiSmoke -and -not (Ollama-Up)) {
+# 2. Ollama (the local model server), unless HALO only hands work to other vendors
+if (-not $CiSmoke -and -not $Mode) {
+    Write-Host "What should HALO do?"
+    Write-Host "  1. both    local model for routine work + hand work to other vendors (HFF)"
+    Write-Host "  2. hybrid  local model only (installs Ollama, downloads a model)"
+    Write-Host "  3. hff     hand work to other vendors only; nothing to download"
+    $Mode = @{ "2" = "hybrid"; "3" = "hff" }[(Read-Host "Pick 1-3 (Enter = 1)").Trim()]
+    if (-not $Mode) { $Mode = "both" }
+}
+if (-not $CiSmoke -and $Mode -ne "hff" -and -not (Ollama-Up)) {
     if (-not (Have ollama)) {
         if (-not (Have winget)) { throw "Install Ollama from https://ollama.com/download and re-run." }
         Say "Installing Ollama (winget)..."
@@ -71,7 +80,7 @@ if ($userPath -notlike "*$scripts*") {
 if (-not $CiSmoke) {
     # Interactive: shows the models that fit this PC and the agents found, lets you pick
     # (Enter = recommended models / all agents).
-    $setupArgs = @("-m", "halo", "setup")
+    $setupArgs = @("-m", "halo", "setup", "--mode", $Mode)
     if (-not ((Have claude) -or (Have codex) -or (Have gemini))) {
         Write-Host "   (No Claude Code / Codex / Gemini CLI found: HALO works from the terminal; run 'halo agents add <name>' after installing one.)"
     }
@@ -87,12 +96,13 @@ if ($desktop) {
     $sh = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $desktop "HALO.lnk"))
     $sh.TargetPath = $pyw
     $sh.Arguments = "-m halo gui"
-    $sh.Description = "HALO control panel (hybrid / frontier only)"
+    $sh.Description = "HALO control panel (both / hybrid / hff)"
     $sh.Save()
     Say "Desktop shortcut created: HALO"
 }
 
 & $py -m halo --version
 if ($CiSmoke) { Say "CI smoke install OK"; exit 0 }
-Say "Done. Optional: run 'halo tune' (or 'Auto-pick' in the panel) to find the best local models for this PC."
+if ($Mode -eq "hff") { Say "Done. Next: 'halo workers test codex' (or gemini / claude) checks the agent HALO hands work to." }
+else { Say "Done. Optional: run 'halo tune' (or 'Auto-pick' in the panel) to find the best local models for this PC." }
 Start-Process $pyw -ArgumentList "-m", "halo", "gui"
