@@ -214,8 +214,8 @@ project to a scratch directory (without `.git`, caches and secrets such as `.env
 files; `venv`/`node_modules` are linked so checks still run), runs the other vendor's CLI there
 as a real agent (`codex exec -s workspace-write`; Claude Code with file tools only; Gemini in
 `auto_edit`), runs the check itself and gives up to `handoff_rounds` (default 2) repair rounds
-with the check output. Only changes inside the sector come back: anything else is dropped and
-listed, and if the agent in charge edited one of those files in the meantime nothing is
+with the check output. Only changes inside the sector come back: anything else is undone before
+each check (an agent that edits the tests instead of the code cannot pass) and listed, and if the agent in charge edited one of those files in the meantime nothing is
 applied and a patch is saved under `~/.local/share/halo/handoffs/`. The result is a diffstat,
 the other agent's short summary and the check result, so the agent in charge spends a few
 hundred tokens instead of doing the work on its own quota. On a toy two-module task with

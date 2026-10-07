@@ -8,8 +8,8 @@ changes inside the sector. The controller reads a short report instead of doing 
 so the work is paid from the other vendor's quota.
 
 Safety comes from the copy, not from trusting the agent: it never sees the real directory,
-changes outside the sector are dropped (and reported), and a file the controller edited in
-the meantime is never overwritten.
+changes outside the sector are undone before every check (so a pass means the sector alone
+passes) and reported, and a file the controller edited in the meantime is never overwritten.
 """
 import difflib
 import fnmatch
@@ -45,7 +45,8 @@ You are inside a scratch copy of the project; HALO reviews your changes afterwar
 
 Rules:
 - You may create, edit or delete files ONLY inside this sector: {sector}
-  Changes anywhere else are thrown away.
+  Changes anywhere else are undone before HALO runs the check, so the check cannot be
+  passed by editing tests or other files outside the sector.
 - Do not ask questions; nobody will answer. If the task is impossible as specified, change
   nothing and say why in your final message, starting with "#ESCALATE:".
 - HALO runs this check from the project root afterwards and it must exit 0:
@@ -63,6 +64,12 @@ Your previous round did not pass the check. Check output:
 {feedback}
 ```
 The project copy still holds your previous changes. Fix the cause, then summarise again.
+"""
+
+REVERTED = """
+HALO put these files back as they were, because they are outside the sector and changes
+there never reach the real project: {files}
+The check ran without your changes to them. Make it pass by changing files in the sector only.
 """
 
 
@@ -161,6 +168,24 @@ def _read_text(path: str) -> list[str] | None:
         return None
 
 
+def _revert_outside(base: str, proj: str, before: dict, sector: list[str]) -> list[str]:
+    """Undo the agent's changes outside the sector, so the check judges exactly what can be
+    applied (an agent that edits the tests instead of the code must not pass)."""
+    after = snapshot(proj)
+    reverted = []
+    for rel in sorted(set(before) | set(after)):
+        if before.get(rel) == after.get(rel) or in_sector(rel, sector):
+            continue
+        dst = os.path.join(proj, rel)
+        if rel in before:
+            os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+            shutil.copy2(os.path.join(base, rel), dst)
+        else:
+            os.remove(dst)
+        reverted.append(rel)
+    return reverted
+
+
 def _diff(old_root: str, new_root: str, rels: list[str]) -> tuple[str, list[str]]:
     """Unified diff of `rels` plus one diffstat line per file."""
     out, stat = [], []
@@ -213,6 +238,8 @@ def handoff(cfg: Config, task: str, sector: list[str], *, workdir: str = ".",
 
         status, reason, summary, out, feedback, done = "failed", "", "", "", "", 0
         timeouts = 0
+        dropped: set[str] = set()  # every outside-sector edit, across rounds
+        reverted: list[str] = []  # outside-sector edits undone before the last check
         for done in range(1, rounds + 1):
             runs = llm.agent_runs_check(vendors.split(agent, cfg)[0], check)
             prompt = AGENT_RULES.format(
@@ -223,6 +250,8 @@ def handoff(cfg: Config, task: str, sector: list[str], *, workdir: str = ".",
                            "refused.\n") if runs else "")
             if feedback:
                 prompt += REPAIR.format(feedback=feedback)
+            if reverted:
+                prompt += REVERTED.format(files=", ".join(reverted[:20]))
             try:
                 summary = llm.cli_agent(cfg, prompt, agent, proj, usage, cfg.handoff_timeout,
                                         check=check)
@@ -243,6 +272,8 @@ def handoff(cfg: Config, task: str, sector: list[str], *, workdir: str = ".",
             if not check:
                 status = "done"
                 break
+            reverted = _revert_outside(base, proj, before, sector)
+            dropped.update(reverted)
             ok, out = tasks._run_check(check, proj, cfg.check_timeout)
             if ok:
                 status = "passed"
@@ -252,7 +283,7 @@ def handoff(cfg: Config, task: str, sector: list[str], *, workdir: str = ".",
         after = snapshot(proj)
         changed = sorted(r for r in set(before) | set(after) if before.get(r) != after.get(r))
         inside = [r for r in changed if in_sector(r, sector)]
-        outside = [r for r in changed if r not in inside]
+        outside = sorted(dropped | {r for r in changed if r not in inside})
         diff, stat = _diff(base, proj, inside)
 
         # Files the controller changed in the real directory while the agent was working.

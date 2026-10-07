@@ -146,6 +146,23 @@ class TestHandoff(Base):
         r = self.run_rounds([{"write": {"src/x.py": GOOD}}], diff_mode="stat")
         self.assertNotIn("diff", r)
 
+    def test_check_ignores_edits_outside_sector(self):
+        # The agent "fixes" the test instead of the code. Only the sector comes back, so the
+        # check must judge the sector alone, or a pass here is a failure in the real project.
+        os.makedirs(os.path.join(self.proj, "tests"))
+        self.put("tests/t.py", "import sys; sys.path.insert(0, 'src'); import x\n"
+                               "assert x.f() == 2\n")
+        check = f"{sys.executable} tests/t.py"
+        r = self.run_rounds([{"write": {"tests/t.py": "pass\n"}},
+                             {"write": {"tests/t.py": "pass\n", "src/x.py": GOOD}}],
+                            check=check, rounds=2)
+        self.assertEqual((r["status"], r["rounds"]), ("passed", 2), r)
+        self.assertEqual(r["dropped_outside_sector"], ["tests/t.py"])
+        self.assertIn("outside the sector", self.calls()[1]["prompt"])
+        self.assertIn("tests/t.py", self.calls()[1]["prompt"])
+        self.assertEqual(self.get("tests/t.py").count("assert"), 1)
+        self.assertEqual(self.get("src/x.py"), GOOD)
+
     def test_glob_sector(self):
         r = self.run_rounds([{"write": {"src/x.py": GOOD, "src/x.txt": "t\n"}}],
                             sector=["src/*.py"])
