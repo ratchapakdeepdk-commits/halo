@@ -104,7 +104,7 @@ sys.stdin.read()
 with open("calc.py", "w") as fh:
     fh.write("def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n")
 subprocess.Popen([sys.executable, "-c",
-                  "import time; time.sleep(3); open(%r, 'w').write('alive')" % os.environ["FAKE_MARK"]])
+                  "import time; time.sleep(6); open(%r, 'w').write('alive')" % os.environ["FAKE_MARK"]])
 time.sleep(60)
 '''
 
@@ -483,8 +483,11 @@ class TestTimeout(Base):
         self.cfg.custom_workers = {"hang": {"agent": ["{bin}"], "bin": exe}}
         self.cfg.handoff_timeout = 3
         mark = os.path.join(self.dir, "helper-alive")
+        t0 = time.time()
         with mock.patch.dict(os.environ, {"FAKE_MARK": mark}):
             r = handoff.probe(self.cfg, "hang")
         self.assertEqual(r["steps"]["agent"]["status"], "passed", r)
-        time.sleep(4)
+        # The helper writes 6 s after it starts and the kill comes at 3 s: a slow taskkill
+        # on a Windows runner still lands first. Wait until a surviving helper would have written.
+        time.sleep(max(0.0, 8.5 - (time.time() - t0)))
         self.assertFalse(os.path.exists(mark), "the CLI's helper outlived the timeout")
