@@ -1,6 +1,6 @@
 ---
 name: halo-delegate
-description: Use BEFORE writing any new self-contained file that tests or a command can check (e.g. "create X.py so the tests pass", a parser, converter, script, small module, fixture) - delegate it to the free local model with halo_code instead of generating it yourself. Also use BEFORE reading or grepping through any large log/file/command output - one halo_digest call returns the answer with exact counts. Saves frontier output tokens and turns.
+description: Use BEFORE writing any new self-contained file that tests or a command can check (e.g. "create X.py so the tests pass", a simple converter, script, small module, fixture; not logic-dense parsers) - delegate it to the free local model with halo_code instead of generating it yourself. Also use BEFORE reading or grepping through any large log/file/command output - one halo_digest call returns the answer with exact counts. Saves frontier output tokens and turns.
 ---
 
 # Delegate routine work to the local model (HALO)
