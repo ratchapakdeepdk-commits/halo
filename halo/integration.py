@@ -38,9 +38,10 @@ This machine has a free local model behind the `halo` MCP tools. Work hybrid in 
   the file; grep only a key claim listed in `checks.not_found`.
 - Before writing a new self-contained file that a test or command can check, delegate it with
   `halo_code`. Keep the spec short and pass the test file as `context_files`. If the result
-  is `failed`, fix the `.halo-draft`. If it is `escalated`, do the work yourself.
-  A file you can write in one pass in under ~80 lines costs about the same either way;
-  the saving is on longer files.
+  is `failed`, fix the `.halo-draft` if it is close, else rewrite. If it is `escalated`, do
+  the work yourself. A file you can write in one pass in under ~80 lines costs about the same
+  either way; logic-dense files (expression parsers, cron, Markdown: many interacting rules)
+  fail locally and cost ~20% more, so write those yourself.
 - Keep design, multi-file changes, subtle debugging and security-sensitive code yourself.
 - When the user asks to hand work to another agent or vendor (Codex/GPT, Gemini, Claude), use
   `halo_handoff` with a narrow `sector` and a check, then review the diff it returns (it finds

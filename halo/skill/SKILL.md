@@ -29,15 +29,18 @@ call that answers the question, plus one targeted check, is the cheap path.
    `signals` and `checks.verified` are code-checked against the file (with line numbers):
    do not re-grep those. Grep only a critical claim listed in `checks.not_found`.
 3. **`halo_code`** for a single, well-specified, mechanically checkable file:
-   boilerplate, parsers/format converters, CLI glue, small pure functions, fixtures.
+   boilerplate, simple format converters, CLI glue, small pure functions, fixtures.
+   Not logic-dense files (expression parsers, cron, Markdown: many interacting rules):
+   the local model fails those and the round trip costs ~20% more than writing it.
    - Write the check first (small test file or `python -c "...assert..."`); an
      import-only check is not a check. Pass the test file as `context_files` and keep
      `spec` SHORT (only what the tests don't show: signatures, allowed libraries).
      Your spec is output tokens - if it is as long as the code, just write the code.
    - `passed` → trust the tests, optionally skim. `failed` → if a `.halo-draft`
-     exists, fix the draft (usually a few lines) instead of rewriting; `escalated`
+     exists and is close (its line count is in the result), fix it; if it is much
+     longer than what you would write, rewrite; `escalated`
      → do it yourself.
-   - Savings grow with file size: for a 10-line function just write it yourself.
+   - For a 10-line function just write it yourself.
 4. **Do it yourself**: design, multi-file changes, subtle debugging,
    security-sensitive code, anything a command cannot check.
 5. **Handing a chunk to another vendor** (only when the user asks, e.g. "let Codex do the

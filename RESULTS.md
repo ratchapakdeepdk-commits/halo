@@ -356,6 +356,35 @@ failed on emphasis logic instead. Prompts are not logged, so whether the hint fi
 intermediate round is unknown. Drafts differ from run to run, and these long tasks fail on a
 different bug each time: one feedback trick does not move the pass rate.
 
+### End-to-end: does the frontier repair the near-miss draft? (7 Oct 2026)
+
+`bench/e2e.sh code bench/tasks/{cron,calc,mdhtml}`, Sonnet in charge, random arm order, one
+pair each. The HALO arm delegated every time. The local cascade (qwen3.6, then `gpt-oss:20b`)
+failed all three after 4–5 attempts and 12–14 minutes. Each run ended on a `gpt-oss` call that
+hit the 300 s timeout (`status: "error"`).
+
+| task | baseline | with HALO | Δ cost | draft handed back | what Sonnet did |
+|---|---|---|---|---|---|
+| cron | $0.090 | $0.094 | +5% | 291 lines (ref 82), 2 tests failing | rewrote it without reading the draft |
+| calc | $0.079 | $0.116 | +47% | 316 lines (ref 163), 3 failing | "I'll write it myself", then one fix of its own |
+| mdhtml | $0.122 | $0.141 | +16% | 346 lines (ref 102), 6 of 8 failing | read the tests, rewrote |
+| **total** | **$0.290** | **$0.351** | **+21%** | | all 6 arms pass their tests |
+
+The answer is no. Sonnet never opened a `.halo-draft`, even though the result said "fixing it is
+usually cheaper than rewriting". It had a good reason: the drafts were 2–4× the length of the
+file it would write, so reading one costs about as much as writing the file. The HALO arm pays
+for the ToolSearch, the spec and a larger context on top of the same rewrite.
+
+Changes:
+- The `draft` field now gives the draft's line count and no longer claims repair is cheaper.
+- The rule block, the skill and the `halo_code` description now say that logic-dense files
+  (expression parsers, cron, Markdown) fail locally and cost ~20% more, so write those yourself.
+- "Parsers" was removed from the list of good fits.
+
+On this machine `halo_code` has not shown a clean saving in any e2e run since the arm order was
+randomised (29 Sep: +10% on 70–85-line converters; today: +21% on long logic). The measured
+savings are in `halo_digest` and in HFF handoffs of 150+ lines.
+
 ## HFF handoff: Claude hands a multi-file job to Codex (5 Oct 2026)
 
 `bench/e2e.sh handoff bench/handoff/txledger`: a package of three modules (parser with error

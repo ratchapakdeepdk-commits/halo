@@ -815,8 +815,12 @@ def code(cfg: Config, spec: str, target: str, check: str, *, workdir: str = ".",
             result["last_check_output"] = _tail(last_out, lines=15, chars=1200)
         result["file_restored"] = not keep_on_fail
         if draft_rel:
-            result["draft"] = (f"{draft_rel} holds the best attempt (check output above); "
-                               f"fixing it is usually cheaper than rewriting")
+            # e2e 7 Oct: on long tasks the drafts ran 2-4x the reference length and the
+            # frontier rewrote all three without reading them, so give it the size to judge by
+            n = best[1].count("\n") + 1
+            result["draft"] = (f"{draft_rel} holds the best attempt ({n} lines; check output "
+                               f"above). Fix it if it is close; if it is much longer than the "
+                               f"file you would write, rewriting is cheaper")
 
     # Done directly, the frontier reads the current file and the check output and WRITES the
     # new file (output tokens). With HALO it writes spec + check and reads `result`. Context
