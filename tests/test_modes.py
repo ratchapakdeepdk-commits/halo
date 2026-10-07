@@ -168,5 +168,26 @@ class TestGui(Env):
             srv.server_close()
 
 
+
+class TestGuiScript(unittest.TestCase):
+    """One syntax error in the page script blanks the whole control panel (a missing `)`
+    did, from 6 to 7 Oct 2026), and no other test runs the JavaScript."""
+
+    def test_page_script_parses(self):
+        import re
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if not node or subprocess.run([node, "-e", "null ?? 1"], capture_output=True).returncode:
+            self.skipTest("no node, or one too old for the syntax every browser has (??)")
+        script = re.search(r"<script>(.*?)</script>", gui.PAGE, re.S).group(1)
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
+            fh.write(script)
+        try:
+            p = subprocess.run([node, "--check", fh.name], capture_output=True, text=True)
+        finally:
+            os.remove(fh.name)
+        self.assertEqual(p.returncode, 0, p.stderr[-800:])
+
 if __name__ == "__main__":
     unittest.main()

@@ -558,7 +558,7 @@ function wKind(){const k=$("w-kind").value;for(const f of["preset","api","cli"])
  if(k==="preset")wPreset();else wWarn()}
 function wPreset(){const n=$("w-name");if(!n.value||S.presets.some(p=>p.name===n.value))n.value=$("w-preset").value;wWarn()}
 function wWarn(){$("w-rc-row").hidden=wIsApi();$("w-warn").textContent=(!wIsApi()&&$("w-rc").checked?"It may run the check command, which runs code the model just wrote, as you, with no sandbox beyond the CLI's own rule that allows only that exact command. ":"")+(wIsApi()?"Prompts and the material HALO gives this worker (specs, failing code, council files) are sent to that API."
-  :"HALO cannot sandbox a CLI you add. Whatever its own permissions allow runs as you, inside a scratch copy of the project (secrets left out). Only files inside the sector come back, and only after the check passes, but the CLI itself can still read your home directory or use the network if it is allowed to. Deny shell and outside directories in its own settings."}
+  :"HALO cannot sandbox a CLI you add. Whatever its own permissions allow runs as you, inside a scratch copy of the project (secrets left out). Only files inside the sector come back, and only after the check passes, but the CLI itself can still read your home directory or use the network if it is allowed to. Deny shell and outside directories in its own settings.")}
 async function addWorker(){const k=$("w-kind").value,b={action:"add",name:$("w-name").value.trim(),understood:$("w-ok").checked};
  if(k==="preset")b.preset=$("w-preset").value;
  if(k==="api")Object.assign(b,{api:$("w-api").value.trim(),model:$("w-model").value.trim(),key_env:$("w-kenv").value.trim(),key_file:$("w-kfile").value.trim()});
