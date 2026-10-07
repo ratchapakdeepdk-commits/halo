@@ -465,3 +465,30 @@ nothing it can apply, so it has to do the job itself after waiting 12–19 minut
 works blind, because letting it run the check would mean running model-written code with no
 sandbox (Codex has its own), and qwen3.6 is weaker than GPT-5 at this size. Where it fits
 today: jobs well under 100 lines, or where Codex quota is gone and waiting is acceptable.
+
+### The same free agent, allowed to run the check (7 Oct 2026)
+
+The four runs above repeated with `run_check` on (commit 13aaef8): a copy of the opencode
+worker (`occheck`) whose shell rule allows exactly the handoff's check command and nothing
+else. Same model (qwen3.6:35b-a3b via the HALO local API), 2 repair rounds, fresh copy each run.
+
+| job | run | result | tests at the end | time | opencode tokens in / out |
+|---|---|---|---|---|---|
+| txledger (111 lines) | 1 | **passed** (round 1) | 9/9 | 224 s | 396k / 4k |
+| txledger | 2 | **passed** (round 1) | 9/9 | 450 s | 811k / 6k |
+| tasklog (174 lines) | 1 | failed | 10/11 | 1011 s | 2,108k / 23k |
+| tasklog | 2 | failed | 9/11 | 1763 s | 1,013k / 8k |
+
+2/4 passed (blind: 1/4), and every run ended closer than its blind counterpart: txledger
+passed in round one both times, 2–3× faster than the blind pass, and tasklog ended at
+10/11 and 9/11 instead of 6/11 and 8/11. The agent ran the check in all four runs.
+
+- Both tasklog runs failed on the same test, the column widths of the text table. The model
+  could see the failing assertion but not test an idea: it wrote a debug script
+  (`tests/debug_table.py`, `run_tests.py`) and was refused, since only the exact check
+  command is allowed. So the rule worked as intended, and it is now the limit on what the
+  model can find out.
+- Still not a default agent: a failed handoff gives the controller nothing to apply, and
+  tasklog took 17–29 minutes to fail. Codex passed both jobs every time in 1–3 minutes.
+  With run_check, the free agent is worth trying on jobs around 100 lines when Codex quota
+  is gone.
