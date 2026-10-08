@@ -535,9 +535,10 @@ The same two jobs, one run each, given to Qwen Code 0.25.0 and aider 0.86.2, bot
 | aider | txledger | failed | 6/9 | 301 s |
 | aider | tasklog | failed | 7/11 | 417 s |
 
-0/4, the same place opencode reached blind (6/9, 6/11, 8/11). Both txledger runs failed on
-the same three tests that opencode's failed run did, so the limit is the model, not the
-CLI. aider was 2–3× faster, since it writes whole files in one reply instead of a tool loop.
+0/4, about where opencode got without running the check (6/9, 6/11, 8/11). Both txledger
+runs ended with the same 3 errors (accounts rejected in the tests' setUp), which points at the
+model rather than the CLI. aider was 2–3× faster, since it writes whole files in one reply
+instead of a tool loop.
 
 What it took to get them running, for anyone adding them:
 
