@@ -556,3 +556,27 @@ What it took to get them running, for anyone adding them:
   (0 tests could even import). The worker runs `git init` in the scratch copy and passes
   test files with `--read`. With an unknown model it caps replies at ~4k tokens and cut a
   110-line file short; a model settings file raising `max_tokens` fixed that.
+
+### aider allowed to run the check: 4/4 (8 Oct 2026)
+
+The aider worker above with `run_check` on (`aidercheck`): `check_env` sets
+`AIDER_AUTO_TEST=true` and `AIDER_TEST_CMD={check}`, so aider runs exactly the handoff's
+check after each edit and feeds the failures back to the model itself (its own reflection
+loop); everything else about the shell stays off (`--no-suggest-shell-commands`). Same model
+(qwen3.6:35b-a3b, `coder` on the HALO local API), 2 HALO repair rounds, fresh copy each run.
+
+| job | run | result | tests at the end | time |
+|---|---|---|---|---|
+| txledger (111 lines) | 1 | **passed** (round 2) | 9/9 | 762 s |
+| txledger | 2 | **passed** (round 2) | 9/9 | 437 s |
+| tasklog (174 lines) | 1 | **passed** (round 2) | 11/11 | 1176 s |
+| tasklog | 2 | **passed** (round 2) | 11/11 | 946 s |
+
+4/4, against 0/4 for the same aider blind and 2/4 for opencode with the same check rule
+(`occheck`, which never passed tasklog). The tests at the end were run again in the real
+directory after HALO applied the sector. The difference from `occheck`: aider runs the check
+on its own after every edit and hands the model the output, where opencode had to decide to
+call it. Every run needed HALO's second round, and it is slow: 7–20 minutes per job against
+Codex's 1–3. Still, for the first time a free agent passes both jobs, so it is the one to use
+when the Codex quota is gone. Tokens are not counted (aider prints text, not usage). Not yet
+reviewed: whether its code is as loose on untested input as Codex's was.
