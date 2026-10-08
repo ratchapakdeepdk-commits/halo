@@ -263,8 +263,15 @@ def handoff(cfg: Config, task: str, sector: list[str], *, workdir: str = ".",
                     break
                 summary = f"(round {done} stopped: {e})"
             except llm.LocalModelError as e:
-                status, reason = "error", str(e)
-                break
+                # A CLI that crashed mid-job (seen: Ollama rejecting one malformed tool call
+                # after the agent wrote every file) still leaves its edits: judge them like a
+                # timeout. With no edit in the sector it never got going - an error.
+                now = snapshot(proj)
+                if not check or not any(in_sector(r, sector) and before.get(r) != now.get(r)
+                                        for r in set(before) | set(now)):
+                    status, reason = "error", str(e)
+                    break
+                summary = f"(round {done} stopped: {e})"
             esc = tasks._escalation(summary)
             if esc:
                 status, reason = "escalated", esc

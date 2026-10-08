@@ -521,3 +521,37 @@ passed in round one both times, 2–3× faster than the blind pass, and tasklog 
   tasklog took 17–29 minutes to fail. Codex passed both jobs every time in 1–3 minutes.
   With run_check, the free agent is worth trying on jobs around 100 lines when Codex quota
   is gone.
+
+### Two more free agents: Qwen Code and aider (8 Oct 2026)
+
+The same two jobs, one run each, given to Qwen Code 0.25.0 and aider 0.86.2, both added with
+`halo workers add NAME --spec ...` (no preset yet) and pointed at the same model as above
+(qwen3.6:35b-a3b, `coder` on the HALO local API). Shell denied in both, 2 repair rounds.
+
+| agent | job | result | tests at the end | time |
+|---|---|---|---|---|
+| Qwen Code | txledger | failed | 6/9 | 783 s |
+| Qwen Code | tasklog | failed | 8/11 | 694 s |
+| aider | txledger | failed | 6/9 | 301 s |
+| aider | tasklog | failed | 7/11 | 417 s |
+
+0/4, the same place opencode reached blind (6/9, 6/11, 8/11). Both txledger runs failed on
+the same three tests that opencode's failed run did, so the limit is the model, not the
+CLI. aider was 2–3× faster, since it writes whole files in one reply instead of a tool loop.
+
+What it took to get them running, for anyone adding them:
+
+- Qwen Code straight on Ollama: with thinking on, a turn that only thinks after a tool result
+  trips Qwen Code's "stream ended after a tool result without visible progress" and ends the
+  run; with `reasoning_effort: none` qwen3.6 writes tool calls as text instead of calling
+  them. Through the HALO local API (thinking off, tool calls parsed there) it works. Its
+  settings only load without `--bare`, so the worker uses its own `QWEN_HOME`. It runs on
+  Node ≥ 20; an older `node` on PATH fails at once.
+- Qwen Code still crashed mid-job twice (a malformed tool call Ollama could not parse; its
+  own loop guard) after writing every file. HALO used to stop with `error` there; now a
+  crashed round that changed the sector is checked like a timed-out one and gets its repair
+  round (test_crash_after_edits_still_checked).
+- aider: without git it has no repo map and never reads the tests, so it guessed class names
+  (0 tests could even import). The worker runs `git init` in the scratch copy and passes
+  test files with `--read`. With an unknown model it caps replies at ~4k tokens and cut a
+  110-line file short; a model settings file raising `max_tokens` fixed that.

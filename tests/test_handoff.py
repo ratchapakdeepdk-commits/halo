@@ -34,6 +34,7 @@ print(json.dumps({"type": "item.completed",
                   "item": {"type": "agent_message", "text": r.get("reply", "done")}}))
 print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 500,
                   "output_tokens": 50}}))
+sys.exit(r.get("exit", 0))
 '''
 
 CHECK = f'{sys.executable} -c "import sys; sys.path.insert(0, \'src\'); import x; assert x.f() == 2"'
@@ -175,6 +176,17 @@ class TestHandoff(Base):
         r = self.run_rounds([{"reply": "looked around"}], check="")
         self.assertEqual(r["status"], "failed")
         self.assertIn("changed nothing", r["reason"])
+
+    def test_crash_after_edits_still_checked(self):
+        # The CLI dies after writing (e.g. one malformed tool call): its edits get judged.
+        r = self.run_rounds([{"write": {"src/x.py": "def f():\n    return 3\n"}, "exit": 1},
+                             {"write": {"src/x.py": GOOD}}], rounds=2)
+        self.assertEqual((r["status"], r["rounds"]), ("passed", 2), r)
+        self.assertIn("did not pass the check", self.calls()[1]["prompt"])
+        # A crash before any edit in the sector is still an error, not a wasted round.
+        r = self.run_rounds([{"write": {"README.md": "x\n"}, "exit": 1}], rounds=2)
+        self.assertEqual(r["status"], "error", r)
+        self.assertEqual(r["rounds"], 1)
 
     def test_bad_requests(self):
         self.assertEqual(handoff.handoff(self.cfg, "t", ["../other"], workdir=self.proj,
