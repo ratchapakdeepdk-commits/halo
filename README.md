@@ -10,10 +10,23 @@ free local model, so you spend frontier tokens only where frontier reasoning is 
 - 🛑 When the local model can't do it, it says `#ESCALATE`, or the tests never pass. The
   file is restored and your agent gets a short failure report so it can take over.
 
-**Early results** ([RESULTS.md](RESULTS.md)): in end-to-end A/B runs with Claude Code, cost
-fell 17–29% on log questions and 13% on a small coding task. Output tokens fell 40–60%. A
-local model cascade passed 14/14 benchmark coding tasks. The samples are small, and the
-numbers are reproducible with `bench/`.
+**Results so far** ([RESULTS.md](RESULTS.md), failures included). In end-to-end A/B runs
+with Claude Code:
+
+| job | Claude's cost | output tokens |
+|---|---|---|
+| questions about a large log (`halo_digest`) | **−17 to −29%** | −40 to −60% |
+| multi-file job handed to Codex, ~175 lines, diff reviewed (`halo_handoff`) | **−29%** | −74% |
+| same, ~110 lines | +6% (break-even) | ~−60% |
+| 70–85-line converters written locally (`halo_code`, random order) | **+10%** | −56% |
+| long logic-dense files (cron, expression parser, Markdown) | **+21%** | – |
+
+So HALO pays off on large inputs and large jobs, and not on small or logic-dense code (the
+local draft fails and the frontier rewrites it). Output tokens always fall, but cost is
+dominated by reading context. Samples are small (6–8 pairs; prompt-cache state alone moves a
+run by ±30%), all from one machine (2× Tesla P100, `qwen3.6:35b-a3b`), and reproducible with
+`bench/`. Free receiving agents work too: aider on the local model passed both handoff jobs
+4/4 when allowed to run the check, at 7–20 min per job versus 1–3 min for Codex.
 
 ```
 Frontier agent (plans, uses tools, decides)
