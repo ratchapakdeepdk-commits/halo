@@ -26,7 +26,8 @@ class FakeOllama:
 
             def do_GET(self):
                 if self.path == "/api/tags":
-                    self._send({"models": [{"name": m} for m in fake.models]})
+                    self._send({"models": [m if isinstance(m, dict) else {"name": m}
+                                           for m in fake.models]})
                 elif self.path == "/api/ps":
                     self._send({"models": []})
                 else:

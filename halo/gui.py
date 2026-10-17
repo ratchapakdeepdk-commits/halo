@@ -80,7 +80,7 @@ def status() -> dict:
         installed = sorted(m["name"] for m in tags)
         ollama = True
     except llm.LocalModelError:
-        installed, ollama = [], False
+        tags, installed, ollama = [], [], False
     records = ledger.read()
     s = ledger.summary(records)
     t = s["total"]
@@ -89,7 +89,7 @@ def status() -> dict:
     recs = {m.name for m in catalog.recommended(hw["gib"], cpu)}
     choices = [{"name": m.name, "size": m.size_gib, "good_at": m.good_at, "note": m.note,
                 "thai": m.thai, "moe": m.moe, "tested": m.tested,
-                "installed": m.name in installed, "recommended": m.name in recs}
+                "installed": bool(catalog.installed_as(m.name, tags)), "recommended": m.name in recs}
                for m in catalog.fitting(hw["gib"], cpu)]
     return {
         "version": __version__,
@@ -204,8 +204,7 @@ def _pull_job(names):
     def run(log):
         cfg = config.load()
         for n in names:
-            log(f"downloading {n} ...")
-            if not llm.pull(cfg, n, progress=log):
+            if not llm.ensure(cfg, n, progress=log):
                 log(f"{n}: failed")
         log("Tip: press 'Auto-pick best for this machine' to measure them and assign roles.")
     return run

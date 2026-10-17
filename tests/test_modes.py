@@ -196,6 +196,27 @@ class TestCatalog(Env):
         self.fake.pull_lines = [{"error": "pull model manifest: file does not exist"}]
         self.assertFalse(llm.pull(config.load(), "nope", progress=msgs.append))
 
+    def test_installed_as_skips_redownload(self):
+        from halo import catalog, llm
+        G = 2**30
+        tags = [{"name": "qwen2.5-coder:latest", "size": int(4.4 * G)},
+                {"name": "qwen2.5-coder:14b", "size": int(8.4 * G)},
+                {"name": "qwen3:30b-a3b-thinking-2507-q4_K_M", "size": int(17.3 * G)},
+                {"name": "library/qwen3:8b", "size": int(4.9 * G)}]
+        self.assertEqual(catalog.installed_as("qwen2.5-coder:7b", tags), "qwen2.5-coder:latest")
+        self.assertEqual(catalog.installed_as("qwen2.5-coder:14b", tags), "qwen2.5-coder:14b")
+        self.assertEqual(catalog.installed_as("qwen3:8b", tags), "library/qwen3:8b")
+        self.assertIsNone(catalog.installed_as("qwen3:30b-a3b-instruct-2507-q4_K_M", tags))
+        self.assertIsNone(catalog.installed_as("qwen3:14b", tags))
+        self.fake.models = tags
+        msgs = []
+        self.assertEqual(llm.ensure(config.load(), "qwen2.5-coder:7b", msgs.append),
+                         "qwen2.5-coder:latest")
+        self.assertFalse(self.fake.requests)  # no /api/pull sent
+        self.assertIn("skipping download", msgs[0])
+        self.assertEqual(llm.ensure(config.load(), "qwen3:14b", msgs.append), "qwen3:14b")
+        self.assertEqual(self.fake.requests[-1]["model"], "qwen3:14b")
+
 
 class TestGui(Env):
     def test_token_required_and_mode_switch(self):

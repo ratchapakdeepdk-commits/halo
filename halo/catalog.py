@@ -87,6 +87,35 @@ def by_name(name: str) -> Model | None:
     return next((m for m in CATALOG if m.name == name), None)
 
 
+def _norm(name: str) -> str:
+    n = name.lower().removeprefix("registry.ollama.ai/").removeprefix("library/")
+    return n if ":" in n else n + ":latest"
+
+
+def installed_as(name: str, tags: list[dict]) -> str | None:
+    """The installed model (from Ollama /api/tags) that already is `name`, so it need not be
+    downloaded again. Same name after normalising (`qwen3:8b` = `library/qwen3:8b`), or the
+    same repo under another tag of the catalog size: `qwen2.5-coder:latest` and
+    `qwen2.5-coder:7b-instruct` are the 7b. A different variant (`-thinking` vs `-instruct`)
+    or size (14b vs 7b) does not count."""
+    want = _norm(name)
+    by_norm = {_norm(t["name"]): t["name"] for t in tags}
+    if want in by_norm:
+        return by_norm[want]
+    m = by_name(name)
+    if not m:
+        return None
+    repo, tag = want.split(":", 1)
+    near = []
+    for t in tags:
+        r, tg = _norm(t["name"]).split(":", 1)
+        gib = t.get("size", 0) / 2**30
+        if (r == repo and (tg == "latest" or tg.startswith(tag) or tag.startswith(tg))
+                and abs(gib - m.size_gib) <= 0.1 * m.size_gib):
+            near.append((abs(gib - m.size_gib), t["name"]))
+    return min(near)[1] if near else None
+
+
 def describe(m: Model) -> str:
     tags = [m.good_at if m.good_at != "both" else "digest+code"]
     if m.moe:

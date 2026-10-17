@@ -195,20 +195,21 @@ def _detect_url(cfg) -> str | None:
     return None
 
 
-def print_catalog(hw: dict, installed: list[str]) -> list:
+def print_catalog(hw: dict, installed: list[dict]) -> list:
     """Numbered table of catalog models that fit this machine; returns them in order."""
     fits = catalog.fitting(hw["gib"], hw["kind"] == "cpu")
     recs = {m.name for m in catalog.recommended(hw["gib"], hw["kind"] == "cpu")}
     print("\n  #  model                                  size   good at / tested with HALO")
     for i, m in enumerate(fits, 1):
         mark = "★" if m.name in recs else " "
-        have = " [installed]" if m.name in installed else ""
+        have = catalog.installed_as(m.name, installed)
+        have = (f" [installed{' as ' + have if have != m.name else ''}]" if have else "")
         print(f"{mark}{i:>3}  {m.name:<38} {m.size_gib:>4.1f}G  {catalog.describe(m)}{have}")
     print("  ★ = recommended for this machine\n")
     return fits
 
 
-def choose_models(hw: dict, installed: list[str], interactive: bool) -> list[str]:
+def choose_models(hw: dict, installed: list[dict], interactive: bool) -> list[str]:
     recs = [m.name for m in catalog.recommended(hw["gib"], hw["kind"] == "cpu")]
     fits = print_catalog(hw, installed) if interactive else catalog.fitting(hw["gib"])
     if not interactive or not fits:
@@ -240,7 +241,7 @@ def assign_roles(cfg, chosen: list[str]) -> None:
 
 def cmd_models(a, cfg):
     hw = doctor.accelerator()
-    installed = [m["name"] for m in llm.raw(cfg, "/api/tags").get("models", [])]
+    installed = llm.raw(cfg, "/api/tags").get("models", [])
     if not a.pull:
         print(f"{hw['detail']} → about {hw['gib']:.0f} GiB for models")
         print_catalog(hw, installed)
@@ -248,7 +249,7 @@ def cmd_models(a, cfg):
         return 0
     ok = True
     for name in a.pull:
-        ok &= llm.pull(cfg, name, progress=lambda m: print(f"  {m}"))
+        ok &= llm.ensure(cfg, name, progress=lambda m: print(f"  {m}")) is not None
     return 0 if ok else 1
 
 
@@ -288,7 +289,7 @@ def _setup_local(a, cfg):
     cfg.ollama_url = url
     print(f"✓ Ollama at {url}")
 
-    installed = [m["name"] for m in llm.raw(cfg, "/api/tags").get("models", [])]
+    installed = llm.raw(cfg, "/api/tags").get("models", [])
     if a.model:
         chosen = [a.model] + ([a.code_model] if a.code_model else [])
     else:
@@ -299,12 +300,12 @@ def _setup_local(a, cfg):
         if not chosen:
             print("No model fits this machine's memory; pass --model explicitly.")
             return 1
-    for model in chosen:
-        if model in installed:
-            continue
-        print(f"downloading {model} ...")
-        if not llm.pull(cfg, model, progress=lambda m: print(f"  {m}")):
+    for i, model in enumerate(chosen):
+        have = llm.ensure(cfg, model, progress=lambda m: print(f"  {m}"))
+        if not have:
             return 1
+        chosen[i] = have
+    chosen = list(dict.fromkeys(chosen))
     assign_roles(cfg, chosen)
     print(f"✓ digest model: {cfg.model}\n✓ code model:   {cfg.code_model or cfg.model}"
           + (f"\n✓ fallback:     {', '.join(cfg.fallback_models)}" if cfg.fallback_models else ""))

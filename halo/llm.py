@@ -305,6 +305,21 @@ def pull(cfg: Config, name: str, progress=None, attempts: int = 6) -> bool:
     return False
 
 
+def ensure(cfg: Config, name: str, progress=None) -> str | None:
+    """Pull `name` unless it is already installed (maybe under another tag, see
+    catalog.installed_as). Returns the installed name to use, or None if the pull failed."""
+    from . import catalog
+    have = catalog.installed_as(name, raw(cfg, "/api/tags").get("models", []))
+    if have:
+        if progress:
+            progress(f"{name}: already installed" + (f" as {have}" if have != name else "")
+                     + ", skipping download")
+        return have
+    if progress:
+        progress(f"downloading {name} ...")
+    return name if pull(cfg, name, progress) else None
+
+
 def _pull_once(cfg: Config, name: str, progress) -> bool | None:
     """True = done, False = hard error, None = stalled (retry)."""
     req = urllib.request.Request(cfg.ollama_url + "/api/pull",
